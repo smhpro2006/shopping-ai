@@ -1,0 +1,38 @@
+PRODUCTS = [
+    {
+        "id": 1,
+        "brand": "Sony",
+        "model": "WH-1000XM5",
+        "name": "Sony WH-1000XM5 Wireless Noise Cancelling Headphones",
+        "category": "Headphones",
+        "price": 349.99,
+        "store": "Amazon",
+    },
+    {
+        "id": 2,
+        "brand": "Sony",
+        "model": "WH-1000XM5",
+        "name": "Sony WH-1000XM5 Wireless Headphones",
+        "category": "Headphones",
+        "price": 329.99,
+        "store": "Walmart",
+    },
+    {
+        "id": 3,
+        "brand": "Apple",
+        "model": "AirPods Pro 2",
+        "name": "Apple AirPods Pro 2nd Generation",
+        "category": "Earbuds",
+        "price": 249.00,
+        "store": "Best Buy",
+    },
+    {
+        "id": 4,
+        "brand": "Samsung",
+        "model": "Galaxy Buds3 Pro",
+        "name": "Samsung Galaxy Buds3 Pro Wireless Earbuds",
+        "category": "Earbuds",
+        "price": 199.99,
+        "store": "Amazon",
+    },
+]

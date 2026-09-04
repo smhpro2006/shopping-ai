@@ -1,0 +1,39 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+**Shopping AI** — A FastAPI-based REST API that provides AI-powered product search using a keyword/brand/model scoring algorithm.
+
+## Running the Server
+
+```bash
+source venv/bin/activate
+uvicorn backend.app.main:app --reload
+```
+
+The API runs on `http://localhost:8000` by default. FastAPI auto-generates interactive docs at `/docs`.
+
+## Testing the API
+
+```bash
+curl http://localhost:8000/
+curl "http://localhost:8000/search?q=sony+headphones"
+```
+
+## Architecture
+
+Three core modules:
+
+- **`backend/app/main.py`** — FastAPI app with two endpoints: `GET /` (health check) and `GET /search?q=` (product search). The search endpoint scores all products, filters at score ≥ 20, and returns sorted results.
+- **`backend/app/products.py`** — In-memory product database (hardcoded list of dicts with id, brand, model, name, category, price, store fields).
+- **`backend/app/product_matching.py`** — Scoring engine: `normalize(text)` strips non-alphanumeric chars; `calculate_match_score(query, product)` returns 0–100 using weighted rules: brand match (+30), full model match (+70), model fragment ≥3 chars (+50), query words in name (+5 each), brand+model fragment combo (+20).
+
+There is no database, no authentication, and no frontend — this is a minimal proof-of-concept.
+
+## Dependencies
+
+Dependencies are managed via the `venv/` virtual environment at the project root. There is no `requirements.txt`; if adding packages, pin them and create one.
+
+Key packages: `fastapi`, `uvicorn`, `pydantic`.

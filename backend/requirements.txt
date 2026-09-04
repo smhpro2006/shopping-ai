@@ -1,0 +1,30 @@
+# Shopping AI — backend dependencies
+# Merged from project root requirements.txt and setup package requirements.txt.
+# Preserve every existing package; new packages added from setup.
+
+# ---- Core (already in use, pinned from project root) ----
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
+pydantic[email]==2.13.5
+pydantic-settings
+
+# ---- Database ----
+sqlalchemy==2.0.52
+alembic
+psycopg[binary]
+
+# ---- HTTP clients ----
+httpx
+httpx2==2.12.0
+
+# ---- Auth / security (from project root) ----
+PyJWT==2.13.0
+python-dotenv==1.2.3
+
+# ---- AI (from project root) ----
+anthropic>=1.3.0
+
+# ---- Testing ----
+pytest==9.1.1
+pytest-asyncio
