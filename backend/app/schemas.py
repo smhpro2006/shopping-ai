@@ -2,6 +2,31 @@ from pydantic import BaseModel, EmailStr
 from typing import List, Optional
 
 
+# ── Retailers ─────────────────────────────────────────────
+
+class RetailerRead(BaseModel):
+    id: int
+    name: str
+    url: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ── Offers ────────────────────────────────────────────────
+
+class OfferRead(BaseModel):
+    id: int
+    retailer: RetailerRead
+    price: float
+    currency: str
+    url: Optional[str] = None
+    availability: Optional[str] = None
+    condition: str
+    source: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
 # ── Products ──────────────────────────────────────────────
 
 class ProductBase(BaseModel):
@@ -9,13 +34,13 @@ class ProductBase(BaseModel):
     model: str
     name: str
     category: str
-    price: float
-    store: str
     image_url: Optional[str] = None
 
 
 class ProductCreate(ProductBase):
-    pass
+    # price and store accepted for convenience — internally creates a default Offer
+    price: Optional[float] = None
+    store: Optional[str] = None
 
 
 class ProductUpdate(BaseModel):
@@ -23,19 +48,24 @@ class ProductUpdate(BaseModel):
     model: Optional[str] = None
     name: Optional[str] = None
     category: Optional[str] = None
-    price: Optional[float] = None
-    store: Optional[str] = None
     image_url: Optional[str] = None
 
 
 class ProductRead(ProductBase):
     id: int
+    offers: List[OfferRead] = []
+    lowest_price: Optional[float] = None
+    retailer_count: int = 0
 
     model_config = {"from_attributes": True}
 
 
 class ProductResult(ProductRead):
+    # price and store preserved for frontend backward compatibility (= lowest offer)
+    price: Optional[float] = None
+    store: Optional[str] = None
     match_score: int
+    match_label: str  # Exact Match | Very Similar | Similar | Alternative (§12)
 
 
 class AIIntent(BaseModel):

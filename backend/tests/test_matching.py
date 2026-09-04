@@ -1,5 +1,10 @@
 import pytest
-from backend.app.product_matching import normalize, calculate_match_score
+from backend.app.product_matching import (
+    normalize,
+    calculate_match_score,
+    classify_score,
+    _variant_tokens,
+)
 
 SONY = {
     "id": 1,
@@ -117,3 +122,186 @@ class TestAirPods:
     def test_apple_brand_match(self):
         score = calculate_match_score("apple earbuds", APPLE)
         assert score >= 30
+
+
+# ── Permanent regression tests (CLAUDE.md §50) ───────────────────────────────
+# These five queries MUST always match their canonical products.
+# Do not relax thresholds without updating CLAUDE.md.
+
+class TestPermanentSearchQueries:
+    def test_sony_xm5(self):
+        score = calculate_match_score("sony xm5", SONY)
+        assert score >= 70, f"got {score}"
+
+    def test_sony_wh1000xm5_with_hyphens(self):
+        score = calculate_match_score("Sony WH-1000XM5", SONY)
+        assert score >= 90, f"got {score}"
+
+    def test_wh1000xm5_no_brand(self):
+        score = calculate_match_score("WH1000XM5", SONY)
+        assert score >= 60, f"got {score}"
+
+    def test_airpods_pro_2(self):
+        score = calculate_match_score("AirPods Pro 2", APPLE)
+        assert score >= 60, f"got {score}"
+
+    def test_samsung_galaxy_buds3_pro(self):
+        score = calculate_match_score("Samsung Galaxy Buds3 Pro", SAMSUNG)
+        assert score >= 70, f"got {score}"
+
+
+# ── Variant distinction ───────────────────────────────────────────────────────
+# Capacity/storage identifiers in the query must VETO an exact match when the
+# product carries a different value.  Both cases below must hold:
+#   - simple case (single fragment differs)
+#   - multi-fragment case (several fragments match but capacity is wrong)
+#
+# test_multi_fragment_capacity_not_exact_match is the Phase 1 acceptance
+# criterion.  It FAILS with the current engine and must PASS after the fix.
+
+IPHONE_16_128 = {
+    "id": 10,
+    "brand": "Apple",
+    "model": "iPhone 16 128GB",
+    "name": "Apple iPhone 16 128GB",
+    "category": "Phones",
+    "price": 799.99,
+    "store": "Apple",
+}
+
+GALAXY_S25_ULTRA_256 = {
+    "id": 11,
+    "brand": "Samsung",
+    "model": "Galaxy S25 Ultra 256GB",
+    "name": "Samsung Galaxy S25 Ultra 256GB Smartphone",
+    "category": "Phones",
+    "price": 1199.99,
+    "store": "Amazon",
+}
+
+
+class TestVariantDistinction:
+    def test_different_capacity_not_exact_match(self):
+        # Simple case: "iphone" is the only matching fragment → score 50, passes already.
+        score = calculate_match_score("iPhone 16 256GB", IPHONE_16_128)
+        assert score < 95, f"got {score}"
+
+    def test_multi_fragment_capacity_not_exact_match(self):
+        # Multi-fragment case: "galaxy" (+50), "s25" (+50), "ultra" (+50) each match
+        # independently and stack to 100 despite 512GB ≠ 256GB.
+        # This FAILS until the Phase 1 strong-identifier veto is implemented.
+        score = calculate_match_score("Samsung Galaxy S25 Ultra 512GB", GALAXY_S25_ULTRA_256)
+        assert score < 95, (
+            f"512GB ≠ 256GB must prevent an exact/very-similar match, got {score}"
+        )
+
+
+# ── Variant token extraction ──────────────────────────────────────────────────
+
+class TestVariantTokens:
+    def test_storage_gb(self):
+        assert _variant_tokens("256GB") == {"256gb"}
+
+    def test_storage_tb(self):
+        assert _variant_tokens("Samsung 1TB SSD") == {"1tb"}
+
+    def test_multiple_storage(self):
+        assert _variant_tokens("512GB / 1TB option") == {"512gb", "1tb"}
+
+    def test_generation_prefix(self):
+        assert _variant_tokens("AirPods Pro Gen2") == {"gen2"}
+
+    def test_generation_ordinal(self):
+        assert _variant_tokens("AirPods Pro 2nd Gen") == {"2ndgen"}
+
+    def test_mark_revision(self):
+        assert _variant_tokens("Sonos Arc MK2") == {"mk2"}
+
+    def test_no_tokens_plain_model(self):
+        assert _variant_tokens("Sony WH-1000XM5") == set()
+
+    def test_no_tokens_brand_only(self):
+        assert _variant_tokens("Apple") == set()
+
+
+# ── Veto logic ────────────────────────────────────────────────────────────────
+
+AIRPODS_PRO_GEN2 = {
+    "id": 12,
+    "brand": "Apple",
+    "model": "AirPods Pro Gen2",
+    "name": "Apple AirPods Pro 2nd Generation",
+    "category": "Earbuds",
+    "price": 249.00,
+    "store": "Apple",
+}
+
+
+class TestStrongIdentifierVeto:
+    def test_veto_fires_wrong_storage(self):
+        # Query specifies 512GB; product is 256GB → capped at 84
+        score = calculate_match_score("Samsung Galaxy S25 Ultra 512GB", GALAXY_S25_ULTRA_256)
+        assert score <= 84, f"veto should cap at 84, got {score}"
+
+    def test_veto_does_not_fire_correct_storage(self):
+        # Query and product both say 256GB → no veto
+        score = calculate_match_score("Samsung Galaxy S25 Ultra 256GB", GALAXY_S25_ULTRA_256)
+        assert score > 84, f"correct storage should not trigger veto, got {score}"
+
+    def test_veto_does_not_fire_no_storage_in_query(self):
+        # Query has no capacity token → veto is silent
+        score = calculate_match_score("Samsung Galaxy S25 Ultra", GALAXY_S25_ULTRA_256)
+        assert score > 84, f"query without capacity should not trigger veto, got {score}"
+
+    def test_veto_fires_wrong_generation(self):
+        # Query says Gen2; product is Gen3
+        gen3_product = {
+            "id": 13,
+            "brand": "Apple",
+            "model": "AirPods Pro Gen3",
+            "name": "Apple AirPods Pro 3rd Generation",
+            "category": "Earbuds",
+            "price": 299.00,
+            "store": "Apple",
+        }
+        score = calculate_match_score("AirPods Pro Gen2", gen3_product)
+        assert score <= 84, f"gen2 ≠ gen3 should cap at 84, got {score}"
+
+    def test_veto_does_not_fire_correct_generation(self):
+        # Include brand so the base score clears 84, making veto silence detectable.
+        # "AirPods Pro Gen2" alone scores 70 (no brand boost); adding "Apple" hits 100.
+        score = calculate_match_score("Apple AirPods Pro Gen2", AIRPODS_PRO_GEN2)
+        assert score > 84, f"matching generation should not trigger veto, got {score}"
+
+    def test_veto_fires_on_full_model_match_wrong_capacity(self):
+        # Even when the model string fully matches (minus the capacity), veto still applies
+        score = calculate_match_score("iPhone 16 256GB", IPHONE_16_128)
+        assert score < 95, f"full model match with wrong capacity must not be Exact, got {score}"
+
+
+# ── Score classification ──────────────────────────────────────────────────────
+
+class TestClassifyScore:
+    def test_exact_match_lower_bound(self):
+        assert classify_score(95) == "Exact Match"
+
+    def test_exact_match_upper_bound(self):
+        assert classify_score(100) == "Exact Match"
+
+    def test_very_similar_lower(self):
+        assert classify_score(85) == "Very Similar"
+
+    def test_very_similar_upper(self):
+        assert classify_score(94) == "Very Similar"
+
+    def test_similar_lower(self):
+        assert classify_score(70) == "Similar"
+
+    def test_similar_upper(self):
+        assert classify_score(84) == "Similar"
+
+    def test_alternative(self):
+        assert classify_score(69) == "Alternative"
+
+    def test_zero(self):
+        assert classify_score(0) == "Alternative"

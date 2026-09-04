@@ -150,24 +150,57 @@ Priority order: Accuracy · Trust · Search quality · Product matching · Speed
 
 # PART III — ARCHITECTURE
 
-## 6. Current project status
+## 6. Current project status **[REVISED — Phase 0 complete 2026-09-04]**
 
-Backend: Python + FastAPI, in `backend/app/`, running inside a venv.
+Phase 0 is **complete**. The project is ahead of the original baseline. Actual state:
 
-Known files:
+**Backend — `backend/app/`**
 
-- `backend/app/main.py`
-- `backend/app/products.py`
-- `backend/app/product_matching.py`
+| File / directory | Contents |
+|---|---|
+| `main.py` | FastAPI app v0.4.0, lifespan, CORS, logging, routers |
+| `core/config.py` | pydantic-settings; `SECRET_KEY` required with no default |
+| `core/database.py` | SQLAlchemy + SQLite, `get_db` dependency |
+| `core/security.py` | JWT auth, PBKDF2 password hashing |
+| `core/logging.py` | Structured stdout logging |
+| `api/auth.py` | `POST /auth/register`, `/auth/login`, `GET /auth/me` |
+| `api/products.py` | `GET /search`, `GET /products`, `POST/PATCH/DELETE /products` |
+| `models/product.py` | SQLAlchemy `Product` model (id, brand, model, name, category, price, store, image_url) |
+| `models/user.py` | SQLAlchemy `User` model (id, email, hashed_password, is_active, created_at) |
+| `schemas.py` | Flat Pydantic schemas (target: `schemas/` directory, deferred) |
+| `services/ai_search.py` | Claude Haiku intent parsing, score boosting, summary generation |
+| `products.py` | In-memory seed data (4 products, loaded into DB at startup if empty) |
+| `product_matching.py` | `normalize()` + `calculate_match_score()` scoring engine |
 
-Existing endpoints: `GET /` and `GET /search?q=...`
+**Tests — `backend/tests/test_matching.py`:** 23 tests, all passing.
 
-Current behaviour to preserve: a query of `Sony XM5` identifies `Sony WH-1000XM5` with a high match score. **Do not break this.**
+Includes `TestPermanentSearchQueries` (the 5 canonical CLAUDE.md queries) and `TestVariantDistinction` (capacity mismatch must score below 95).
 
-**Inspection items** — verify these during Phase 0:
+**Frontend — `frontend/`:** Vite/React scaffold exists. Not yet wired to the API.
 
-- There appear to be two `venv` directories, one at project root and one under `backend/`. Competing virtual environments are a common cause of "package installed but import fails". Confirm, then propose consolidation. Delete nothing without approval.
-- `shopping-Ai.py` at project root: determine whether it is a live component or a superseded draft.
+**Endpoints:**
+
+| Path | Method | Auth | Notes |
+|---|---|---|---|
+| `/` | GET | — | Health / version |
+| `/health` | GET | — | `{"status": "ok"}` |
+| `/search` | GET | — | Unversioned (backward compat) |
+| `/products` | GET | — | Unversioned (backward compat) |
+| `/api/v1/health` | GET | — | Versioned health |
+| `/api/v1/search` | GET | — | Versioned search |
+| `/api/v1/products` | GET | — | Versioned product list |
+| `/api/v1/auth/register` | POST | — | Register |
+| `/api/v1/auth/login` | POST | — | Login → JWT |
+| `/api/v1/auth/me` | GET | Bearer | Current user |
+| `/api/v1/products` | POST | Bearer | Create product |
+| `/api/v1/products/{id}` | PATCH | Bearer | Update product |
+| `/api/v1/products/{id}` | DELETE | Bearer | Delete product |
+
+**Known engine limitation (Phase 1 scope):** multi-fragment queries (e.g. `"Samsung S25 Ultra 512GB"`) can score 100 against a different-capacity variant because fragments score independently. The capacity test in `TestVariantDistinction` covers the simple case; the multi-fragment case is documented and tracked for Phase 1.
+
+**Resolved inspection items from previous CLAUDE.md:**
+- `venv/` at project root is the active environment (FastAPI installed). `backend/venv/` is unused. Consolidation deferred — delete nothing without approval.
+- `shopping-Ai.py` not found in project root; presumed absent or already removed.
 
 ## 7. Target repository structure
 
@@ -574,32 +607,41 @@ A feature is not complete because the code exists. It is complete when: implemen
 
 ---
 
-# PART VI — CURRENT EXECUTION INSTRUCTION
+# PART VI — CURRENT EXECUTION INSTRUCTION **[REVISED — 2026-09-04]**
 
-**Do not start implementing all phases.**
+## Completed phases
 
-Current task:
+| Phase | Status | Completed |
+|---|---|---|
+| Phase 0 — Project Foundation | **Done** | 2026-09-04 |
 
-1. Inspect the current repository
-2. Identify the current working files
-3. Read `main.py`
-4. Read `products.py`
-5. Read `product_matching.py`
-6. Run the current API and any tests
-7. Confirm current behaviour
-8. Investigate the two inspection items in §6
-9. Propose the smallest next improvement
+## Current position: Phase 1 — Smart Product Search
 
-Immediate priority: **Smart Product Search + Product Matching.**
+**Next up:** improve the search and matching engine. The priority is search quality — it is the primary competitive advantage.
 
-Do not start: the database, Next.js, authentication, the AI assistant, or retailer integrations. Make the search and matching foundation excellent first.
+Phase 0 is done. Do not re-inspect the foundation. Do not start Phase 2 (Canonical Products) until Phase 1 search quality milestones are met and confirmed.
 
-## First search milestone
+## Phase 1 milestones
 
-Support: exact model matching · partial model matching · brand matching · multi-word queries · punctuation normalization · hyphen normalization · case normalization · common abbreviations · model fragments · category awareness · variant awareness · confidence score · deterministic ranking · tests.
+The engine must correctly handle all of:
 
-The existing `Sony XM5` → `Sony WH-1000XM5` behaviour must keep working.
+- Exact model matching
+- Partial model matching (model fragments ≥ 3 chars)
+- Brand matching
+- Multi-word queries
+- Punctuation normalization (hyphens, spaces, special chars)
+- Case normalization
+- Common abbreviations
+- Category awareness
+- Variant awareness (different capacity/color = not exact)
+- Confidence score (0–100, classification per §12)
+- Deterministic, explainable ranking
+- Tests for all of the above
 
-## Final instruction
+**Known issue to fix in Phase 1:** multi-fragment queries can reach score 100 against different-capacity variants. The engine must not falsely assign 95+ to products with a materially different spec (e.g. 512GB vs 256GB). See §12 and `TestVariantDistinction`.
 
-Inspect the existing project. Do not rewrite it. Do not build the roadmap now. Do not install unnecessary packages. Determine the exact current state and verify existing search functionality. Then improve the Smart Product Search / Product Matching foundation step by step, testing after each meaningful change.
+## Standing rules (always)
+
+The `Sony XM5` → `Sony WH-1000XM5` behaviour and all 23 tests must remain passing after every change.
+
+Do not start Phase 2 (Canonical Products), Phase 3 (Data Acquisition), or the frontend until Phase 1 is complete and confirmed.
