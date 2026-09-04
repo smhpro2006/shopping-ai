@@ -377,6 +377,62 @@ tr:hover td { background: var(--bg); }
 .intent-tag--model    { background: #fef3c7; color: #92400e; }
 .intent-tag--feature  { background: #f1f5f9; color: #475569; }
 
+/* ── Match label ────────────────────────── */
+.match-label {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 0.15rem 0.55rem;
+  border-radius: 20px;
+  margin-bottom: 0.35rem;
+  text-transform: uppercase;
+}
+.label-exact        { background: #dcfce7; color: #166534; }
+.label-similar-high { background: #dbeafe; color: #1d4ed8; }
+.label-similar      { background: #fef3c7; color: #92400e; }
+.label-alt          { background: #f1f5f9; color: #475569; }
+
+.retailer-count {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.no-price { color: var(--text-muted); font-size: 0.9rem; font-weight: 400; }
+
+/* ── Offers panel ───────────────────────── */
+.offers-toggle {
+  margin-top: 0.65rem;
+  background: none;
+  border: none;
+  color: var(--primary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 0;
+  font-weight: 500;
+}
+.offers-toggle:hover { text-decoration: underline; }
+
+.offers-list {
+  margin-top: 0.6rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.offer-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.83rem;
+}
+.offer-retailer { font-weight: 500; min-width: 90px; }
+.offer-price    { color: var(--primary); font-weight: 700; min-width: 60px; }
+.offer-avail    { color: var(--text-muted); flex: 1; }
+.offer-link     { color: var(--primary); font-size: 0.78rem; white-space: nowrap; }
+.offer-link:hover { text-decoration: underline; }
+
 /* ── Misc ───────────────────────────────── */
 .loading { display: flex; justify-content: center; padding: 4rem; color: var(--text-muted); }
 .spinner { width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.7s linear infinite; }
