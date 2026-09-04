@@ -4,6 +4,9 @@ from backend.app.product_matching import (
     calculate_match_score,
     classify_score,
     _variant_tokens,
+    _ctx_tokens,
+    _expand_query,
+    _edit_distance,
 )
 
 SONY = {
@@ -305,3 +308,152 @@ class TestClassifyScore:
 
     def test_zero(self):
         assert classify_score(0) == "Alternative"
+
+
+# ── Phase 5: context tokens ───────────────────────────────────────────────────
+
+class TestCtxTokens:
+    def test_tier_pro(self):
+        assert "pro" in _ctx_tokens("Galaxy Buds3 Pro")
+
+    def test_tier_ultra(self):
+        assert "ultra" in _ctx_tokens("Galaxy S25 Ultra")
+
+    def test_color_black(self):
+        assert "black" in _ctx_tokens("iPhone 16 Pro Black")
+
+    def test_connectivity_5g(self):
+        assert "5g" in _ctx_tokens("iPad 5G")
+
+    def test_no_ctx_plain_model(self):
+        assert _ctx_tokens("Sony WH-1000XM5") == set()
+
+    def test_professional_not_pro(self):
+        assert "pro" not in _ctx_tokens("Professional Audio")
+
+
+# ── Phase 5: tier veto ────────────────────────────────────────────────────────
+
+GALAXY_BUDS3_BASE = {
+    "id": 20,
+    "brand": "Samsung",
+    "model": "Galaxy Buds3",
+    "name": "Samsung Galaxy Buds3 Wireless Earbuds",
+    "category": "Earbuds",
+    "price": 159.99,
+    "store": "Amazon",
+}
+
+
+class TestTierVeto:
+    def test_pro_query_vs_non_pro_product_capped(self):
+        score = calculate_match_score("Samsung Galaxy Buds3 Pro", GALAXY_BUDS3_BASE)
+        assert score <= 84, f"'Pro' absent from product must cap at 84, got {score}"
+
+    def test_pro_query_vs_pro_product_not_capped(self):
+        score = calculate_match_score("Samsung Galaxy Buds3 Pro", SAMSUNG)
+        assert score > 84, f"Matching tier should not trigger veto, got {score}"
+
+    def test_ultra_query_vs_non_ultra_product_capped(self):
+        galaxy_s25 = {
+            "id": 21,
+            "brand": "Samsung",
+            "model": "Galaxy S25",
+            "name": "Samsung Galaxy S25 Smartphone",
+            "category": "Phones",
+            "price": 799.99,
+            "store": "Amazon",
+        }
+        score = calculate_match_score("Samsung Galaxy S25 Ultra", galaxy_s25)
+        assert score <= 84, f"'Ultra' absent from product must cap at 84, got {score}"
+
+    def test_no_tier_query_not_vetoed(self):
+        score = calculate_match_score("Samsung Galaxy Buds3", SAMSUNG)
+        assert score >= 70, f"Query without tier should still match Pro product, got {score}"
+
+
+# ── Phase 5: brand synonyms ───────────────────────────────────────────────────
+
+UE_HYPERBOOM = {
+    "id": 22,
+    "brand": "Ultimate Ears",
+    "model": "Hyperboom",
+    "name": "Ultimate Ears Hyperboom Portable Bluetooth Speaker",
+    "category": "Speakers",
+    "price": 399.99,
+    "store": "Amazon",
+}
+
+SENNHEISER_M4 = {
+    "id": 23,
+    "brand": "Sennheiser",
+    "model": "Momentum 4",
+    "name": "Sennheiser Momentum 4 Wireless Headphones",
+    "category": "Headphones",
+    "price": 279.99,
+    "store": "Amazon",
+}
+
+BOSE_QC45 = {
+    "id": 24,
+    "brand": "Bose",
+    "model": "QuietComfort 45",
+    "name": "Bose QuietComfort 45 Wireless Headphones",
+    "category": "Headphones",
+    "price": 279.00,
+    "store": "Amazon",
+}
+
+
+class TestBrandSynonyms:
+    def test_ue_expands_to_ultimate_ears(self):
+        score = calculate_match_score("UE Hyperboom", UE_HYPERBOOM)
+        assert score >= 70, f"'UE' should expand to 'Ultimate Ears', got {score}"
+
+    def test_sennheizer_typo_matches(self):
+        score = calculate_match_score("Sennheizer Momentum 4", SENNHEISER_M4)
+        assert score >= 30, f"Sennheizer typo should still match Sennheiser brand, got {score}"
+
+    def test_qc45_alias_matches(self):
+        score = calculate_match_score("QC45", BOSE_QC45)
+        assert score >= 60, f"QC45 alias should expand to QuietComfort 45, got {score}"
+
+
+# ── Phase 5: edit distance ────────────────────────────────────────────────────
+
+class TestEditDistance:
+    def test_identical_strings(self):
+        assert _edit_distance("sony", "sony") == 0
+
+    def test_single_substitution(self):
+        assert _edit_distance("sony", "somy") == 1
+
+    def test_single_insertion(self):
+        assert _edit_distance("sony", "sonya") == 1
+
+    def test_single_deletion(self):
+        assert _edit_distance("sonys", "sony") == 1
+
+    def test_clearly_different(self):
+        assert _edit_distance("apple", "samsung") > 3
+
+    def test_fuzzy_model_fragment(self):
+        assert _edit_distance("momentum4", "momentum3") == 1
+
+
+# ── Phase 5: query expansion ──────────────────────────────────────────────────
+
+class TestExpandQuery:
+    def test_ue_expanded(self):
+        assert "ultimate ears" in _expand_query("UE Hyperboom")
+
+    def test_sennheizer_corrected(self):
+        assert "sennheiser" in _expand_query("Sennheizer Momentum 4")
+
+    def test_qc45_expanded(self):
+        assert "quietcomfort 45" in _expand_query("QC45 headphones")
+
+    def test_no_expansion_preserves_query(self):
+        expanded = _expand_query("Sony WH-1000XM5")
+        assert "sony" in expanded
+        assert "wh-1000xm5" in expanded
