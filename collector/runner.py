@@ -187,6 +187,16 @@ def run_once(
             query_obj = query_obj.filter(Product.id == product_id)
         products = query_obj.all()
 
+    ebay_base = (
+        "https://api.sandbox.ebay.com"
+        if EBAY_ENVIRONMENT.lower() == "sandbox"
+        else "https://api.ebay.com"
+    )
+    logger.info(
+        "Starting collection — environment: %s | base: %s | products: %d | dry_run: %s",
+        EBAY_ENVIRONMENT, ebay_base, len(products), dry_run,
+    )
+
     with EbayClient(EBAY_APP_ID, EBAY_CERT_ID, EBAY_ENVIRONMENT) as ebay:
         for product in products:
             stats.products_processed += 1
@@ -200,6 +210,16 @@ def run_once(
 
             try:
                 raw = ebay.search(search_query, limit=50)
+            except EbayAuthError:
+                # Not transient — invalid_client will fail for every subsequent
+                # product with identical credentials. Abort immediately.
+                logger.error(
+                    "AUTH FAILURE on eBay %s (%s) — credentials rejected. "
+                    "Check that EBAY_APP_ID / EBAY_CERT_ID match "
+                    "EBAY_ENVIRONMENT='%s'. Aborting.",
+                    EBAY_ENVIRONMENT, ebay_base, EBAY_ENVIRONMENT,
+                )
+                raise
             except Exception as exc:
                 logger.error("eBay search failed for %s %s: %s", product.brand, product.model, exc)
                 stats.error_count += 1

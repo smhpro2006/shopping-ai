@@ -1,5 +1,6 @@
 """Unit tests for the collector package — no eBay credentials required."""
 import pytest
+from unittest.mock import patch, MagicMock
 
 from collector.ebay_search import normalize_condition, parse_listings, build_search_query
 from collector.runner import _bidirectional_variant_check, _score_listing
@@ -309,3 +310,48 @@ class TestCategoryPriceFloor:
         assert "headphones" in CATEGORY_PRICE_FLOORS
         assert "earbuds" in CATEGORY_PRICE_FLOORS
         assert "speakers" in CATEGORY_PRICE_FLOORS
+
+
+# ── Fail-fast on auth errors ──────────────────────────────────────────────────
+
+class TestFailFastOnAuthError:
+    """invalid_client is not transient — run_once must abort on the first failure
+    rather than retrying the same rejected credentials for every product."""
+
+    def _mock_ebay(self, search_side_effect):
+        mock_ebay = MagicMock()
+        mock_ebay.search.side_effect = search_side_effect
+        mock_cls = MagicMock()
+        mock_cls.return_value.__enter__.return_value = mock_ebay
+        return mock_cls, mock_ebay
+
+    def test_auth_error_aborts_run(self, client):
+        from collector.runner import run_once
+        mock_cls, mock_ebay = self._mock_ebay(
+            EbayAuthError("invalid_client: credentials rejected")
+        )
+        with patch("collector.runner.EbayClient", mock_cls):
+            with pytest.raises(EbayAuthError):
+                run_once(dry_run=True)
+
+        assert mock_ebay.search.call_count == 1, (
+            f"Expected 1 search call before abort, got {mock_ebay.search.call_count}. "
+            "Auth errors must not retry against subsequent products."
+        )
+
+    def test_transient_error_continues(self, client):
+        from collector.runner import run_once
+        calls = []
+
+        def flaky(query, **kwargs):
+            calls.append(query)
+            if len(calls) == 1:
+                raise RuntimeError("Connection timeout")
+            return {"itemSummaries": []}
+
+        mock_cls, mock_ebay = self._mock_ebay(flaky)
+        with patch("collector.runner.EbayClient", mock_cls):
+            stats = run_once(dry_run=True)
+
+        assert stats.error_count == 1, "Expected exactly 1 transient error recorded"
+        assert len(calls) > 1, "Run should have continued past the transient error"
