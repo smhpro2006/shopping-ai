@@ -47,6 +47,7 @@ In **Project → web service → Variables**, add:
 | `EBAY_CERT_ID` | from developer.ebay.com | Leave blank until eBay account created |
 | `EBAY_ENVIRONMENT` | `production` | Set to `sandbox` while testing collector |
 | `ANTHROPIC_API_KEY` | from console.anthropic.com | Required for AI search features |
+| `COLLECTOR_WRITES_ENABLED` | `true` | Defaults false. Collector is read-only until explicitly set. |
 
 `DATABASE_URL` is provided automatically by the Postgres service — do not set it manually.
 
