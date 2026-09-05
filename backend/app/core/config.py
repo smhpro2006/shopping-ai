@@ -42,3 +42,10 @@ EBAY_ENVIRONMENT = settings.EBAY_ENVIRONMENT
 COLLECTOR_OFFERS_PER_PRODUCT = settings.COLLECTOR_OFFERS_PER_PRODUCT
 COLLECTOR_MIN_MATCH_SCORE = settings.COLLECTOR_MIN_MATCH_SCORE
 COLLECTOR_WRITES_ENABLED = settings.COLLECTOR_WRITES_ENABLED
+
+# psycopg3 (psycopg[binary]) requires the +psycopg dialect prefix.
+# Railway injects DATABASE_URL as postgresql:// (psycopg2 convention).
+# Transform at the boundary so every downstream consumer gets the right URL.
+_raw_db_url = DATABASE_URL
+if _raw_db_url.startswith("postgresql://"):
+    DATABASE_URL = _raw_db_url.replace("postgresql://", "postgresql+psycopg://", 1)
