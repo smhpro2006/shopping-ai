@@ -645,3 +645,52 @@ The engine must correctly handle all of:
 The `Sony XM5` → `Sony WH-1000XM5` behaviour and all 23 tests must remain passing after every change.
 
 Do not start Phase 2 (Canonical Products), Phase 3 (Data Acquisition), or the frontend until Phase 1 is complete and confirmed.
+
+## Compliance
+
+**eBay Marketplace Account Deletion: EXEMPT** (filed 2026-09-05).
+Reason on file: we retrieve public listing prices via the Browse API only, storing no eBay user data.
+
+THE EXEMPTION IS CONDITIONAL. It is void the moment we store anything user-specific.
+Phase 22 (affiliate tracking) is the likely trigger — click tracking and conversion data may qualify.
+Before starting Phase 22, re-evaluate. If the exemption lapses, the account-deletion endpoint must
+be built first. The full contract is researched and documented:
+- GET challenge: SHA-256(challengeCode + verificationToken + endpoint), hex-encoded, JSON key `challengeResponse`
+- POST: RSA-verify `JSON.stringify(body)` against `X-EBAY-SIGNATURE` using eBay's rotated public key (fetch by `kid`)
+- Token constraints: 32–80 chars, alphanumeric/underscore/hyphen
+- Return 204 on success, 412 on signature mismatch
+
+## Collector design decisions
+
+**Price ceiling — attempted and removed (2026-09-06):**
+A median-based price ceiling (`median × 1.5` per product) was implemented to catch inflated or
+bundle listings. It was removed after the first production dry-run because:
+- The median was computed across all conditions (new, used, refurbished), which are different markets.
+  A used XM4 at $110 and a new one at $279 both belong in the DB; a median across them is meaningless.
+- With 5–20 candidates per product, splitting by condition leaves 2–6 samples per group —
+  too few for a reliable median. The guard fired on correct prices and passed inflated ones.
+- An inflated price reaching the DB is noise; a used-only DB for a product with new listings
+  available is a broken product (systematically wrong lowest-price display).
+- Outlier resistance belongs in Phase 7 price-history analysis with accumulated data, not at
+  ingestion time with 2–6 samples.
+Replacement: a warning-only HIGH PRICE log line fires when a passing listing exceeds 2× the
+category price floor. This surfaces outliers in dry-run output without rejecting anything.
+If a ceiling is revisited in Phase 7, it must operate per-condition and per-product with
+sufficient historical samples (≥30 per condition group) to be statistically meaningful.
+
+**Known collector gaps (pre-existing, not yet addressed):**
+- `adapter` word keyword rejects "HYPERBOOM /NO POWER ADAPTER-" — a real speaker listed without
+  its charger. Distinguishing "charger for product" from "product sold without charger" requires
+  positional/context logic not yet implemented.
+- "BATTERY NEEDS REPAIR" titles pass the accessory filter — only `needsreplacement` is blocked,
+  not `needsrepair`. These are damaged units priced below market.
+
+## Known discrepancies — expected, do not fix prematurely
+
+**Seed offers vs. retailer_count/lowest_price mismatch (noted 2026-09-05):**
+`GET /api/v1/products` returns `lowest_price: null` and `retailer_count: 0` even when seed offers
+exist in the database. This is correct behaviour: `lowest_price` and `retailer_count` are computed
+from `live_offers()`, which filters for offers fresher than a staleness threshold. Seed offers are
+synthetic and do not pass that filter. The frontend will therefore show offers on the product page
+alongside "0 retailers" on the product card until real collector data arrives. Do not add special
+casing for seed data — the discrepancy self-resolves once the collector runs in production.

@@ -226,8 +226,8 @@ class TestEbayClientAuth:
 # ── Collector hardening guards ────────────────────────────────────────────────
 
 from collector.runner import (  # noqa: E402
-    _is_accessory, _below_price_floor, _price_ceiling, _normalize_roman,
-    CATEGORY_PRICE_FLOORS, PRICE_CEILING_MULTIPLIER,
+    _is_accessory, _below_price_floor, _normalize_roman,
+    CATEGORY_PRICE_FLOORS,
 )
 
 
@@ -401,44 +401,30 @@ class TestFailFastOnAuthError:
         assert len(calls) > 1, "Run should have continued past the transient error"
 
 
-# ── Price ceiling ─────────────────────────────────────────────────────────────
+# ── New-condition at retail price — regression for removed ceiling ────────────
 
-class TestPriceCeiling:
-    _TYPICAL = [200.0, 210.0, 220.0, 230.0, 240.0]  # median = 220
+class TestNewConditionAtRetailNotRejected:
+    """The median-based price ceiling was removed because it mixed conditions and
+    systematically excluded new-condition listings at retail price. These tests
+    assert that the specific listings the ceiling falsely rejected still pass
+    all remaining filters."""
 
-    def test_below_ceiling_passes(self):
-        # 300 < 220 * 1.5 = 330
-        assert not _price_ceiling(300.0, self._TYPICAL)
+    def test_sonos_era_100_retail_not_filtered(self):
+        # $399.99 is the retail price for Sonos Era 100 — was rejected by the ceiling
+        assert not _is_accessory("Sonos Era 100 Wireless Streaming Speaker")
+        assert not _below_price_floor(399.99, "Speakers")
 
-    def test_at_ceiling_passes(self):
-        # 330 == 220 * 1.5 — equal is not above
-        assert not _price_ceiling(330.0, self._TYPICAL)
+    def test_sony_wh1000xm4_retail_not_filtered(self):
+        assert not _is_accessory("Sony WH-1000XM4 Wireless Noise Cancelling Headphones New")
+        assert not _below_price_floor(279.19, "Headphones")
 
-    def test_above_ceiling_rejected(self):
-        # 331 > 220 * 1.5 = 330
-        assert _price_ceiling(331.0, self._TYPICAL)
+    def test_sennheiser_momentum4_retail_not_filtered(self):
+        assert not _is_accessory("Sennheiser Momentum 4 Wireless Headphones New Sealed")
+        assert not _below_price_floor(249.95, "Headphones")
 
-    def test_outlier_rejected(self):
-        # $689 Sonos vs $350-$420 typical range — median ~$385, ceiling ~$578
-        prices = [350.0, 370.0, 390.0, 400.0, 420.0]
-        assert _price_ceiling(689.0, prices)
-
-    def test_too_few_samples_skips(self):
-        # Fewer than PRICE_CEILING_MIN_SAMPLES — ceiling not applied
-        assert not _price_ceiling(9999.0, [100.0, 200.0])
-
-    def test_empty_samples_skips(self):
-        assert not _price_ceiling(9999.0, [])
-
-    def test_single_sample_skips(self):
-        assert not _price_ceiling(9999.0, [100.0])
-
-    def test_ceiling_uses_multiplier_constant(self):
-        # Verify the function respects PRICE_CEILING_MULTIPLIER
-        prices = [100.0, 100.0, 100.0]  # median = 100
-        threshold = 100.0 * PRICE_CEILING_MULTIPLIER
-        assert not _price_ceiling(threshold, prices)         # at threshold — passes
-        assert _price_ceiling(threshold + 0.01, prices)     # just above — rejected
+    def test_airpods_max_retail_not_filtered(self):
+        assert not _is_accessory("Apple AirPods Max Wireless Over-Ear Headphones USB-C New")
+        assert not _below_price_floor(328.00, "Headphones")
 
 
 # ── Roman numeral normalisation ───────────────────────────────────────────────

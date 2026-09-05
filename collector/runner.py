@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -77,11 +76,11 @@ CATEGORY_PRICE_FLOORS: dict[str, float] = {
     "speakers": 30.0,
 }
 
-# Price ceiling: reject listings above this multiple of the per-product median.
-# Applied as a second pass after all other filters; skipped when fewer than
-# PRICE_CEILING_MIN_SAMPLES candidates survive (median unreliable with tiny N).
-PRICE_CEILING_MULTIPLIER: float = 1.5
-PRICE_CEILING_MIN_SAMPLES: int = 3
+# High-price warning threshold: log (but do NOT reject) accepted listings priced
+# above this multiple of the per-category floor. Purpose: surface outliers in
+# dry-run output for human review. Does not gate ingestion — outlier resistance
+# belongs in Phase 7 price-history analysis, not at collection time.
+PRICE_HIGH_WATERMARK_MULTIPLIER: float = 2.0
 
 # Roman numerals II–X mapped to Arabic digits for eBay title normalisation.
 # "I" alone is excluded — too ambiguous (pronoun, connector) and generation-1
@@ -114,18 +113,6 @@ def _is_accessory(title: str) -> bool:
         return True
     compressed = normalize(title)
     return any(phrase in compressed for phrase in ACCESSORY_PHRASE_KEYWORDS)
-
-
-def _price_ceiling(price: float, candidate_prices: list[float]) -> bool:
-    """True if price exceeds PRICE_CEILING_MULTIPLIER × median of candidate_prices.
-
-    Returns False when fewer than PRICE_CEILING_MIN_SAMPLES prices are provided
-    (median is not reliable with tiny sample sizes).
-    """
-    if len(candidate_prices) < PRICE_CEILING_MIN_SAMPLES:
-        return False
-    median = statistics.median(candidate_prices)
-    return price > median * PRICE_CEILING_MULTIPLIER
 
 
 def _below_price_floor(price: float, category: str) -> bool:
@@ -338,34 +325,22 @@ def run_once(
                 listing.match_score = score
                 candidates.append(listing)
 
+                # High-price warning (informational only — never rejects).
+                floor = CATEGORY_PRICE_FLOORS.get(product.category.lower())
+                if floor and listing.price > floor * PRICE_HIGH_WATERMARK_MULTIPLIER:
+                    logger.warning(
+                        "HIGH PRICE $%.2f (%.1fx floor) [%s] %s",
+                        listing.price,
+                        listing.price / floor,
+                        listing.condition,
+                        listing.title[:60],
+                    )
+
                 if verbose:
                     logger.info(
                         "  [%d] %s — $%.2f (%s)",
                         score, listing.title[:60], listing.price, listing.condition,
                     )
-
-            # Median-based price ceiling (second pass, self-calibrating).
-            # Derived from the surviving candidate set so no hardcoded reference price
-            # is needed — adapts to actual market prices per product.
-            if len(candidates) >= PRICE_CEILING_MIN_SAMPLES:
-                candidate_prices = [c.price for c in candidates]
-                pre_ceiling = candidates
-                candidates = []
-                for c in pre_ceiling:
-                    if _price_ceiling(c.price, candidate_prices):
-                        price_median = statistics.median(candidate_prices)
-                        logger.info(
-                            "REJECT [price_ceiling] $%.2f > $%.2f ceiling"
-                            " (%.1fx median $%.2f): %s",
-                            c.price,
-                            price_median * PRICE_CEILING_MULTIPLIER,
-                            c.price / price_median,
-                            price_median,
-                            c.title[:55],
-                        )
-                        stats.no_match_count += 1
-                    else:
-                        candidates.append(c)
 
             # Sort: score desc, price asc; keep top N
             candidates.sort(key=lambda l: (-l.match_score, l.price))
