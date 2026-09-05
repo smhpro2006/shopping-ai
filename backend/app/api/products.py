@@ -80,6 +80,19 @@ def search(
         results.append(_product_to_result_dict(product, score))
 
     results.sort(key=lambda p: p["match_score"], reverse=True)
+
+    # Two-pass category cap: if the top result scores >= 85, infer the query
+    # category from it and cap any cross-category result above 84 to 84.
+    # Below 85 at the top, the query is too ambiguous to infer category.
+    if results:
+        top_score = results[0]["match_score"]
+        if top_score >= 85:
+            query_category = results[0]["category"]
+            for r in results:
+                if r["category"] != query_category and r["match_score"] > 84:
+                    r["match_score"] = 84
+                    r["match_label"] = classify_score(84)
+
     total = len(results)
 
     ai_summary = generate_summary(q, total, intent_raw) if intent_raw else ""
