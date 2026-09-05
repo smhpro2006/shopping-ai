@@ -82,25 +82,70 @@ def _fragment_in_model(part: str, model: str, model_parts: list) -> bool:
     return False
 
 
+# ── Alphanum suffix conflict ──────────────────────────────────────────────────
+
+def _alphanum_suffix_conflict(qp: str, model: str, model_parts: list) -> bool:
+    """True if qp is [letters≥2][digits] absent from model, and a model token ends with same letters+different digits.
+
+    Catches xm4 vs xm5, buds2 vs buds3 — series-code digit mismatches invisible to the veto regex.
+    """
+    m = re.match(r'^([a-z]+)(\d+)$', qp)
+    if not m or len(m.group(1)) < 2 or qp in model:
+        return False
+    qletter, qdigit = m.group(1), m.group(2)
+    for mp in model_parts:
+        sm = re.search(r'([a-z]+)(\d+)$', mp)
+        if sm and sm.group(1).endswith(qletter) and sm.group(2) != qdigit:
+            return True
+    return False
+
+
 # ── Veto ──────────────────────────────────────────────────────────────────────
 
-def _apply_variant_veto(score: int, query: str, product: dict) -> int:
-    """Cap score at 84 when the query names a variant/context token absent from the product."""
+def _apply_variant_veto(score: int, query: str, product: dict,
+                        query_parts: list = None, model: str = "") -> int:
+    """Cap score at 84 (or 70) when the query names an identifier absent from the product."""
     product_text = product.get("model", "") + " " + product.get("name", "")
 
-    # Storage / generation / mark veto
+    # Storage / generation / mark veto → cap at 84
     q_var = _variant_tokens(query)
     if q_var:
         p_var = _variant_tokens(product_text)
         if not q_var.issubset(p_var):
             score = min(score, 84)
 
-    # Tier / color / connectivity veto
+    # Tier / color / connectivity veto → cap at 84
     q_ctx = _ctx_tokens(query)
     if q_ctx:
         p_ctx = _ctx_tokens(product_text)
         if not q_ctx.issubset(p_ctx):
             score = min(score, 84)
+
+    if query_parts and model:
+        model_parts = re.findall(r"[a-z]+\d+|\d+[a-z]+|[a-z]+|\d+", model)
+
+        # Rule 2a: alphanum suffix conflict (xm4/xm5, buds2/buds3) → cap at 70
+        for qp in query_parts:
+            if _alphanum_suffix_conflict(qp, model, model_parts):
+                score = min(score, 70)
+                break
+
+        # Rule 2b: digit adjacency conflict (Era 300 vs 100, QC45 vs Ultra) → cap at 70
+        # A pure-digit token is a discriminator only when adjacent (within 1 position)
+        # to a letter token (≥3 chars) that is a substring of the normalized model.
+        for i, qp in enumerate(query_parts):
+            if re.match(r'^\d+$', qp) and qp not in model:
+                neighbors = []
+                if i > 0:
+                    neighbors.append(query_parts[i - 1])
+                if i < len(query_parts) - 1:
+                    neighbors.append(query_parts[i + 1])
+                for neighbor in neighbors:
+                    if (len(neighbor) >= 3
+                            and re.match(r'^[a-z]+$', neighbor)
+                            and neighbor in model):
+                        score = min(score, 70)
+                        break
 
     return score
 
@@ -160,5 +205,9 @@ def calculate_match_score(query, product):
 
         score = min(score, 100)
 
+    # Brand gate: cap at 70 when query contains no brand signal
+    if brand not in query_clean:
+        score = min(score, 70)
+
     # Veto uses expanded query so synonym/alias expansion is consistent
-    return _apply_variant_veto(score, expanded, product)
+    return _apply_variant_veto(score, expanded, product, query_parts, model)
