@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -30,17 +32,40 @@ from sqlalchemy import create_engine as _create_engine
 logger = logging.getLogger("collector")
 
 # ── Accessory / junk listing filters ──────────────────────────────────────────
-# Pre-normalized (spaces and punctuation removed, lowercased) so they can be
-# checked against the already-normalized listing title in O(1) per keyword.
-# Multi-word phrases like "for parts" become "forparts" after normalize().
-ACCESSORY_KEYWORDS: frozenset[str] = frozenset({
+#
+# Two-tier matching to avoid substring false positives (e.g. "cover" firing
+# inside "ancoverear" when the title says "ANC Over-Ear"):
+#
+# ACCESSORY_WORD_KEYWORDS — checked against individual word tokens (word-boundary
+#   safe). Single unambiguous words that are never part of a legitimate product
+#   title, or only appear there as genuine flags.
+#
+# ACCESSORY_PHRASE_KEYWORDS — checked against the fully-compressed (no-space)
+#   normalized title. Used for multi-word phrases whose individual words are too
+#   common to block alone ("for", "parts") but are unambiguous when adjacent.
+
+ACCESSORY_WORD_KEYWORDS: frozenset[str] = frozenset({
     # Physical accessories
     "case", "cover", "pouch", "sleeve", "earpad", "cushion",
-    "replacement", "cable", "cord", "charger", "adapter",
+    "cable", "cord", "charger", "adapter",
     "stand", "mount", "skin", "decal", "sticker",
-    # Broken / incomplete units
-    "forparts", "notworking", "broken", "faulty",
-    "emptybox", "boxonly", "manualonly",
+    # Broken / damaged units
+    "broken", "faulty", "cracked", "defective", "damaged",
+    # OEM single-component listings (individual earbuds, replacement parts)
+    "oem",
+})
+
+ACCESSORY_PHRASE_KEYWORDS: frozenset[str] = frozenset({
+    # Incomplete units (existing)
+    "forparts", "notworking", "emptybox", "boxonly", "manualonly",
+    # New physical accessories (Problem 1)
+    "powersupply", "bottompart", "repairservice", "partsonly",
+    "lotof", "singleearbud", "rightonly", "leftonly",
+    # Replacement parts / accessories
+    "replacement",
+    # Damaged / non-functional (Problem 3)
+    "doesntwork", "doesntclick", "needsreplacement", "asis",
+    "readdescription",
 })
 
 # Minimum price per category below which a listing is almost certainly an
@@ -52,11 +77,55 @@ CATEGORY_PRICE_FLOORS: dict[str, float] = {
     "speakers": 30.0,
 }
 
+# Price ceiling: reject listings above this multiple of the per-product median.
+# Applied as a second pass after all other filters; skipped when fewer than
+# PRICE_CEILING_MIN_SAMPLES candidates survive (median unreliable with tiny N).
+PRICE_CEILING_MULTIPLIER: float = 1.5
+PRICE_CEILING_MIN_SAMPLES: int = 3
+
+# Roman numerals II–X mapped to Arabic digits for eBay title normalisation.
+# "I" alone is excluded — too ambiguous (pronoun, connector) and generation-1
+# products conventionally use "1st Gen" or "Gen 1" on eBay anyway.
+_ROMAN_NUMERAL_RE = re.compile(
+    r'\b(VIII|VII|VI|IV|III|II|IX|X|V)\b', re.IGNORECASE
+)
+_ROMAN_MAP: dict[str, str] = {
+    'ii': '2', 'iii': '3', 'iv': '4', 'v': '5',
+    'vi': '6', 'vii': '7', 'viii': '8', 'ix': '9', 'x': '10',
+}
+
+
+def _normalize_roman(text: str) -> str:
+    """Replace standalone Roman numerals (II–X) with Arabic digits."""
+    return _ROMAN_NUMERAL_RE.sub(
+        lambda m: _ROMAN_MAP.get(m.group(0).lower(), m.group(0)), text
+    )
+
 
 def _is_accessory(title: str) -> bool:
-    """True if the normalized listing title contains any accessory keyword."""
-    norm = normalize(title)
-    return any(kw in norm for kw in ACCESSORY_KEYWORDS)
+    """True if the listing title contains an accessory or junk indicator.
+
+    Word-level check runs first and is word-boundary safe — 'cover' will not
+    fire on 'Over-Ear'. Phrase-level check catches multi-word patterns that
+    are only meaningful when their constituent words appear adjacent.
+    """
+    words = frozenset(re.findall(r'[a-z0-9]+', title.lower()))
+    if words & ACCESSORY_WORD_KEYWORDS:
+        return True
+    compressed = normalize(title)
+    return any(phrase in compressed for phrase in ACCESSORY_PHRASE_KEYWORDS)
+
+
+def _price_ceiling(price: float, candidate_prices: list[float]) -> bool:
+    """True if price exceeds PRICE_CEILING_MULTIPLIER × median of candidate_prices.
+
+    Returns False when fewer than PRICE_CEILING_MIN_SAMPLES prices are provided
+    (median is not reliable with tiny sample sizes).
+    """
+    if len(candidate_prices) < PRICE_CEILING_MIN_SAMPLES:
+        return False
+    median = statistics.median(candidate_prices)
+    return price > median * PRICE_CEILING_MULTIPLIER
 
 
 def _below_price_floor(price: float, category: str) -> bool:
@@ -252,7 +321,10 @@ def run_once(
                     continue
 
                 # Canonical model must appear literally in the listing title.
-                if normalize(product.model) not in normalize(listing.title):
+                # Roman numeral expansion handles "Earbuds II" matching model "Earbuds 2".
+                listing_norm = normalize(_normalize_roman(listing.title))
+                model_norm = normalize(_normalize_roman(p_dict["model"]))
+                if model_norm not in listing_norm:
                     logger.info("REJECT [model_not_in_title] %s", listing.title[:80])
                     stats.no_match_count += 1
                     continue
@@ -271,6 +343,29 @@ def run_once(
                         "  [%d] %s — $%.2f (%s)",
                         score, listing.title[:60], listing.price, listing.condition,
                     )
+
+            # Median-based price ceiling (second pass, self-calibrating).
+            # Derived from the surviving candidate set so no hardcoded reference price
+            # is needed — adapts to actual market prices per product.
+            if len(candidates) >= PRICE_CEILING_MIN_SAMPLES:
+                candidate_prices = [c.price for c in candidates]
+                pre_ceiling = candidates
+                candidates = []
+                for c in pre_ceiling:
+                    if _price_ceiling(c.price, candidate_prices):
+                        price_median = statistics.median(candidate_prices)
+                        logger.info(
+                            "REJECT [price_ceiling] $%.2f > $%.2f ceiling"
+                            " (%.1fx median $%.2f): %s",
+                            c.price,
+                            price_median * PRICE_CEILING_MULTIPLIER,
+                            c.price / price_median,
+                            price_median,
+                            c.title[:55],
+                        )
+                        stats.no_match_count += 1
+                    else:
+                        candidates.append(c)
 
             # Sort: score desc, price asc; keep top N
             candidates.sort(key=lambda l: (-l.match_score, l.price))
