@@ -9,7 +9,7 @@ from backend.app.models.product import Product
 from backend.app.models.retailer import Retailer
 from backend.app.models.offer import Offer
 from backend.app.models.user import User
-from backend.app.product_matching import calculate_match_score, classify_score
+from backend.app.product_matching import calculate_match_score, classify_score, normalize
 from backend.app.services.ai_search import parse_search_intent, enhance_score_with_intent, generate_summary
 from backend.app.schemas import (
     SearchResponse, AIIntent, ProductCreate, ProductUpdate, ProductRead,
@@ -84,10 +84,17 @@ def search(
     # Two-pass category cap: if the top result scores >= 85, infer the query
     # category from it and cap any cross-category result above 84 to 84.
     # Below 85 at the top, the query is too ambiguous to infer category.
+    # When scores tie, prefer the product whose model is a literal substring of
+    # the normalised query (e.g. WF query should infer Earbuds, not Headphones).
     if results:
         top_score = results[0]["match_score"]
         if top_score >= 85:
-            query_category = results[0]["category"]
+            query_clean = normalize(q)
+            anchor = next(
+                (r for r in results if normalize(r.get("model", "")) in query_clean),
+                results[0],
+            )
+            query_category = anchor["category"]
             for r in results:
                 if r["category"] != query_category and r["match_score"] > 84:
                     r["match_score"] = 84
