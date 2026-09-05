@@ -220,3 +220,92 @@ class TestEbayClientAuth:
     def test_missing_cert_raise(self):
         with pytest.raises(EbayAuthError):
             EbayClient(app_id="some-id", cert_id="")
+
+
+# ── Collector hardening guards ────────────────────────────────────────────────
+
+from collector.runner import _is_accessory, _below_price_floor, CATEGORY_PRICE_FLOORS  # noqa: E402
+
+
+class TestWritesEnabledDefault:
+    def test_writes_disabled_by_default(self):
+        from backend.app.core.config import Settings
+        assert Settings.model_fields["COLLECTOR_WRITES_ENABLED"].default is False
+
+
+class TestAccessoryKeywordBlocklist:
+    def test_case_rejected(self):
+        assert _is_accessory("Case for Sony WH-1000XM5 Headphones")
+
+    def test_cover_rejected(self):
+        assert _is_accessory("Sony WH-1000XM5 Silicone Cover Skin")
+
+    def test_earpad_rejected(self):
+        assert _is_accessory("Sony WH-1000XM5 Ear Pad Replacement Cushion")
+
+    def test_earpad_nospace_rejected(self):
+        assert _is_accessory("WH-1000XM5 Earpad Cushion Set")
+
+    def test_cable_rejected(self):
+        assert _is_accessory("Replacement Audio Cable for Sony WH-1000XM5")
+
+    def test_charger_rejected(self):
+        assert _is_accessory("USB-C Charger for WH-1000XM5")
+
+    def test_for_parts_rejected(self):
+        assert _is_accessory("Sony WH-1000XM5 For Parts Not Working")
+
+    def test_not_working_rejected(self):
+        assert _is_accessory("Sony WH-1000XM5 Not Working As Is")
+
+    def test_broken_rejected(self):
+        assert _is_accessory("Sony WH-1000XM5 Broken Hinge")
+
+    def test_empty_box_rejected(self):
+        assert _is_accessory("Sony WH-1000XM5 Empty Box Only")
+
+    def test_legitimate_listing_passes(self):
+        assert not _is_accessory("Sony WH-1000XM5 Wireless Noise Cancelling Headphones")
+
+    def test_legitimate_used_passes(self):
+        assert not _is_accessory("Sony WH-1000XM5 Wireless Headphones Used Good Condition")
+
+    def test_legitimate_refurb_passes(self):
+        assert not _is_accessory("Sony WH-1000XM5 Certified Refurbished")
+
+
+class TestCategoryPriceFloor:
+    def test_headphones_below_floor_rejected(self):
+        assert _below_price_floor(50.0, "Headphones")
+
+    def test_headphones_at_floor_passes(self):
+        assert not _below_price_floor(80.0, "Headphones")
+
+    def test_headphones_above_floor_passes(self):
+        assert not _below_price_floor(329.99, "Headphones")
+
+    def test_earbuds_below_floor_rejected(self):
+        assert _below_price_floor(25.0, "Earbuds")
+
+    def test_earbuds_at_floor_passes(self):
+        assert not _below_price_floor(40.0, "Earbuds")
+
+    def test_speakers_below_floor_rejected(self):
+        assert _below_price_floor(15.0, "Speakers")
+
+    def test_speakers_at_floor_passes(self):
+        assert not _below_price_floor(30.0, "Speakers")
+
+    def test_unknown_category_always_passes(self):
+        assert not _below_price_floor(1.0, "Phones")
+        assert not _below_price_floor(0.01, "Unknown")
+
+    def test_floor_lookup_case_insensitive(self):
+        assert _below_price_floor(50.0, "headphones")
+        assert _below_price_floor(50.0, "HEADPHONES")
+        assert _below_price_floor(20.0, "earbuds")
+
+    def test_all_category_floors_defined(self):
+        assert "headphones" in CATEGORY_PRICE_FLOORS
+        assert "earbuds" in CATEGORY_PRICE_FLOORS
+        assert "speakers" in CATEGORY_PRICE_FLOORS

@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # Collector tuning
     COLLECTOR_OFFERS_PER_PRODUCT: int = 5
     COLLECTOR_MIN_MATCH_SCORE: int = 85
+    # Must be explicitly set true in .env before any write is allowed.
+    # Default false means a fresh environment never accidentally writes.
+    COLLECTOR_WRITES_ENABLED: bool = False
 
     model_config = SettingsConfigDict(env_file=str(_ENV_FILE), extra="ignore")
 
@@ -38,3 +41,4 @@ EBAY_CERT_ID = settings.EBAY_CERT_ID
 EBAY_ENVIRONMENT = settings.EBAY_ENVIRONMENT
 COLLECTOR_OFFERS_PER_PRODUCT = settings.COLLECTOR_OFFERS_PER_PRODUCT
 COLLECTOR_MIN_MATCH_SCORE = settings.COLLECTOR_MIN_MATCH_SCORE
+COLLECTOR_WRITES_ENABLED = settings.COLLECTOR_WRITES_ENABLED

@@ -14,6 +14,7 @@ from backend.app.core.config import (
     EBAY_ENVIRONMENT,
     COLLECTOR_OFFERS_PER_PRODUCT,
     COLLECTOR_MIN_MATCH_SCORE,
+    COLLECTOR_WRITES_ENABLED,
 )
 from backend.app.core.database import Base, engine
 from backend.app.models.product import Product
@@ -27,6 +28,41 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import create_engine as _create_engine
 
 logger = logging.getLogger("collector")
+
+# ── Accessory / junk listing filters ──────────────────────────────────────────
+# Pre-normalized (spaces and punctuation removed, lowercased) so they can be
+# checked against the already-normalized listing title in O(1) per keyword.
+# Multi-word phrases like "for parts" become "forparts" after normalize().
+ACCESSORY_KEYWORDS: frozenset[str] = frozenset({
+    # Physical accessories
+    "case", "cover", "pouch", "sleeve", "earpad", "cushion",
+    "replacement", "cable", "cord", "charger", "adapter",
+    "stand", "mount", "skin", "decal", "sticker",
+    # Broken / incomplete units
+    "forparts", "notworking", "broken", "faulty",
+    "emptybox", "boxonly", "manualonly",
+})
+
+# Minimum price per category below which a listing is almost certainly an
+# accessory, parts unit, or bundle bait. Covers the categories in the current
+# 20-product catalog; extend as new categories are added.
+CATEGORY_PRICE_FLOORS: dict[str, float] = {
+    "headphones": 80.0,
+    "earbuds": 40.0,
+    "speakers": 30.0,
+}
+
+
+def _is_accessory(title: str) -> bool:
+    """True if the normalized listing title contains any accessory keyword."""
+    norm = normalize(title)
+    return any(kw in norm for kw in ACCESSORY_KEYWORDS)
+
+
+def _below_price_floor(price: float, category: str) -> bool:
+    """True if price is below the per-category minimum. Unknown categories pass."""
+    floor = CATEGORY_PRICE_FLOORS.get(category.lower())
+    return floor is not None and price < floor
 
 
 @dataclass
@@ -124,7 +160,15 @@ def run_once(
     """
     stats = RunStats()
 
-    # Hard guard: sandbox listings are synthetic and must never reach the DB.
+    # Guard 1: writes must be explicitly opted in via env var.
+    if not COLLECTOR_WRITES_ENABLED and not dry_run:
+        logger.warning(
+            "COLLECTOR_WRITES_ENABLED is false — forcing dry_run=True. "
+            "Set COLLECTOR_WRITES_ENABLED=true in backend/.env to enable writes."
+        )
+        dry_run = True
+
+    # Guard 2: sandbox listings are synthetic and must never reach the DB.
     if EBAY_ENVIRONMENT.lower() == "sandbox" and not dry_run:
         logger.warning(
             "EBAY_ENVIRONMENT=sandbox — forcing dry_run=True. "
@@ -170,15 +214,32 @@ def run_once(
                 if score < COLLECTOR_MIN_MATCH_SCORE:
                     stats.no_match_count += 1
                     continue
-                # Hard gate: canonical model must appear literally in the listing title.
-                # The 85-score threshold bypasses the endpoint-level category cap, so
-                # without this a WF listing can be stored against a WH canonical product.
-                if normalize(product.model) not in normalize(listing.title):
-                    logger.debug("Model not in title — skipping: %s", listing.title)
+
+                # Reject listings whose normalized title contains an accessory keyword.
+                if _is_accessory(listing.title):
+                    logger.info("REJECT [accessory] %s", listing.title[:80])
                     stats.no_match_count += 1
                     continue
+
+                # Reject listings priced below the per-category floor.
+                if _below_price_floor(listing.price, product.category):
+                    floor = CATEGORY_PRICE_FLOORS.get(product.category.lower(), 0.0)
+                    logger.info(
+                        "REJECT [price_floor] $%.2f < $%.2f (%s): %s",
+                        listing.price, floor, product.category, listing.title[:60],
+                    )
+                    stats.no_match_count += 1
+                    continue
+
+                # Canonical model must appear literally in the listing title.
+                if normalize(product.model) not in normalize(listing.title):
+                    logger.info("REJECT [model_not_in_title] %s", listing.title[:80])
+                    stats.no_match_count += 1
+                    continue
+
+                # Bidirectional variant-token consistency check.
                 if not _bidirectional_variant_check(search_query, listing.title, p_dict):
-                    logger.debug("Variant mismatch — skipping: %s", listing.title)
+                    logger.info("REJECT [variant_mismatch] %s", listing.title[:80])
                     stats.no_match_count += 1
                     continue
 
