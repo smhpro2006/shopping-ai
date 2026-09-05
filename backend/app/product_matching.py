@@ -84,19 +84,22 @@ def _fragment_in_model(part: str, model: str, model_parts: list) -> bool:
 
 # ── Alphanum suffix conflict ──────────────────────────────────────────────────
 
-def _alphanum_suffix_conflict(qp: str, model: str, model_parts: list) -> bool:
-    """True if qp is [letters≥2][digits] absent from model, and a model token ends with same letters+different digits.
+def _has_alphanum_suffix_conflict(model_parts: list, query_clean: str) -> bool:
+    """True if any model token is [letters≥2][digits] and the normalised query
+    contains the same letter prefix with a different digit suffix.
 
-    Catches xm4 vs xm5, buds2 vs buds3 — series-code digit mismatches invisible to the veto regex.
+    Model-centric check — avoids tokenisation mismatch for hyphenated model
+    strings (e.g. WH-1000XM5 expands to token '1000xm'+'5' via the regex,
+    but 'xm5' appears cleanly in the normalised query string).
+    Catches xm4 vs xm5, buds2 vs buds3.
     """
-    m = re.match(r'^([a-z]+)(\d+)$', qp)
-    if not m or len(m.group(1)) < 2 or qp in model:
-        return False
-    qletter, qdigit = m.group(1), m.group(2)
     for mp in model_parts:
-        sm = re.search(r'([a-z]+)(\d+)$', mp)
-        if sm and sm.group(1).endswith(qletter) and sm.group(2) != qdigit:
-            return True
+        m = re.match(r'^([a-z]+)(\d+)$', mp)
+        if m and len(m.group(1)) >= 2:
+            prefix = m.group(1)
+            for cand in re.findall(re.escape(prefix) + r'\d+', query_clean):
+                if cand != mp:
+                    return True
     return False
 
 
@@ -123,12 +126,13 @@ def _apply_variant_veto(score: int, query: str, product: dict,
 
     if query_parts and model:
         model_parts = re.findall(r"[a-z]+\d+|\d+[a-z]+|[a-z]+|\d+", model)
+        query_clean_veto = normalize(query)  # hyphen-safe form for rule 2a
 
         # Rule 2a: alphanum suffix conflict (xm4/xm5, buds2/buds3) → cap at 70
-        for qp in query_parts:
-            if _alphanum_suffix_conflict(qp, model, model_parts):
-                score = min(score, 70)
-                break
+        # Model-centric: search for the model token's letter prefix + different digit
+        # in the normalised query string, bypassing tokenisation of the expanded form.
+        if _has_alphanum_suffix_conflict(model_parts, query_clean_veto):
+            score = min(score, 70)
 
         # Rule 2b: digit adjacency conflict (Era 300 vs 100, QC45 vs Ultra) → cap at 70
         # A pure-digit token is a discriminator only when adjacent (within 1 position)

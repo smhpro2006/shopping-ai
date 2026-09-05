@@ -457,3 +457,136 @@ class TestExpandQuery:
         expanded = _expand_query("Sony WH-1000XM5")
         assert "sony" in expanded
         assert "wh-1000xm5" in expanded
+
+
+# ── Cross-model false positive regression tests ────────────────────────────────
+# 16 permanent tests for pairs that scored ≥95 before Phase 1 fixes.
+# 14 are unit-level (calculate_match_score, assert < 84).
+# 2 are API-level (WH/WF cross-series, assert ≤84 + match_label).
+
+WH_1000XM4 = {
+    "brand": "Sony", "model": "WH-1000XM4",
+    "name": "Sony WH-1000XM4 Wireless Noise Cancelling Headphones",
+    "category": "Headphones",
+}
+WF_1000XM5 = {
+    "brand": "Sony", "model": "WF-1000XM5",
+    "name": "Sony WF-1000XM5 Wireless Noise Cancelling Earbuds",
+    "category": "Earbuds",
+}
+GALAXY_BUDS2_PRO = {
+    "brand": "Samsung", "model": "Galaxy Buds2 Pro",
+    "name": "Samsung Galaxy Buds2 Pro True Wireless Earbuds",
+    "category": "Earbuds",
+}
+QC_ULTRA = {
+    "brand": "Bose", "model": "QuietComfort Ultra",
+    "name": "Bose QuietComfort Ultra Headphones",
+    "category": "Headphones",
+}
+QC_EARBUDS_2 = {
+    "brand": "Bose", "model": "QuietComfort Earbuds 2",
+    "name": "Bose QuietComfort Earbuds 2 True Wireless Earbuds",
+    "category": "Earbuds",
+}
+ERA_300 = {
+    "brand": "Sonos", "model": "Era 300",
+    "name": "Sonos Era 300 Wireless Speaker",
+    "category": "Speakers",
+}
+ERA_100 = {
+    "brand": "Sonos", "model": "Era 100",
+    "name": "Sonos Era 100 Wireless Speaker",
+    "category": "Speakers",
+}
+PIXEL_BUDS_PRO = {
+    "brand": "Google", "model": "Pixel Buds Pro",
+    "name": "Google Pixel Buds Pro Wireless Earbuds",
+    "category": "Earbuds",
+}
+
+
+class TestCrossModelFalsePositives:
+    # ── Rule 2a: alphanum suffix conflict ────────────────────────────────────
+
+    def test_xm5_query_vs_xm4_product(self):
+        assert calculate_match_score("Sony WH-1000XM5", WH_1000XM4) < 84
+
+    def test_xm4_query_vs_xm5_product(self):
+        assert calculate_match_score("Sony WH-1000XM4", SONY) < 84
+
+    def test_buds3_query_vs_buds2_product(self):
+        assert calculate_match_score("Samsung Galaxy Buds3 Pro", GALAXY_BUDS2_PRO) < 84
+
+    def test_buds2_query_vs_buds3_product(self):
+        assert calculate_match_score("Samsung Galaxy Buds2 Pro", SAMSUNG) < 84
+
+    def test_wf_xm5_query_vs_wh_xm4_product(self):
+        assert calculate_match_score("Sony WF-1000XM5", WH_1000XM4) < 84
+
+    def test_wh_xm4_query_vs_wf_xm5_product(self):
+        assert calculate_match_score("Sony WH-1000XM4", WF_1000XM5) < 84
+
+    # ── Rule 2b: digit adjacency conflict ────────────────────────────────────
+
+    def test_qc45_query_vs_qc_ultra_product(self):
+        assert calculate_match_score("Bose QuietComfort 45", QC_ULTRA) < 84
+
+    def test_qc45_query_vs_qc_earbuds2_product(self):
+        assert calculate_match_score("Bose QuietComfort 45", QC_EARBUDS_2) < 84
+
+    def test_era300_query_vs_era100_product(self):
+        assert calculate_match_score("Sonos Era 300", ERA_100) < 84
+
+    def test_era100_query_vs_era300_product(self):
+        assert calculate_match_score("Sonos Era 100", ERA_300) < 84
+
+    # ── Brand gate: cross-brand fragment stacking ────────────────────────────
+
+    def test_google_buds_query_vs_samsung_buds3_product(self):
+        assert calculate_match_score("Google Pixel Buds Pro", SAMSUNG) < 84
+
+    def test_google_buds_query_vs_samsung_buds2_product(self):
+        assert calculate_match_score("Google Pixel Buds Pro", GALAXY_BUDS2_PRO) < 84
+
+    def test_samsung_buds3_query_vs_google_buds_product(self):
+        assert calculate_match_score("Samsung Galaxy Buds3 Pro", PIXEL_BUDS_PRO) < 84
+
+    def test_samsung_buds2_query_vs_google_buds_product(self):
+        assert calculate_match_score("Samsung Galaxy Buds2 Pro", PIXEL_BUDS_PRO) < 84
+
+    # ── Category cap: WH/WF cross-series (API level) ────────────────────────
+
+    def test_wh_query_wf_product_capped_at_similar(self, client):
+        r = client.get('/api/v1/search?q=Sony+WH-1000XM5')
+        by_name = {p['name']: p for p in r.json()['results']}
+        wf = by_name.get('Sony WF-1000XM5 Wireless Noise Cancelling Earbuds')
+        assert wf is not None
+        assert wf['match_score'] <= 84
+        assert wf['match_label'] == 'Similar'
+
+    def test_wf_query_wh_product_capped_at_similar(self, client):
+        r = client.get('/api/v1/search?q=Sony+WF-1000XM5')
+        by_name = {p['name']: p for p in r.json()['results']}
+        wh = by_name.get('Sony WH-1000XM5 Wireless Noise Cancelling Headphones')
+        assert wh is not None
+        assert wh['match_score'] <= 84
+        assert wh['match_label'] == 'Similar'
+
+
+class TestCategoryAnchorFallback:
+    """Documents the known insertion-order sensitivity when no model is a literal
+    substring of the normalised query.
+
+    For fragment-only queries like "Sony XM5", neither "wh1000xm5" nor "wf1000xm5"
+    appears in "sonyxm5", so the anchor falls back to results[0] — determined by
+    DB insertion order (Product.id ASC). Which XM5 variant leads is an artefact
+    of insertion order, not query intent. This is a documented limitation.
+    """
+
+    def test_fragment_query_anchor_insertion_order_sensitive(self, client):
+        r = client.get('/api/v1/search?q=Sony+XM5')
+        results = r.json()['results']
+        assert len(results) >= 2
+        top_names = [p['name'] for p in results[:2]]
+        assert any('XM5' in n for n in top_names)
