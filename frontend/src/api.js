@@ -41,4 +41,7 @@ export const api = {
 
   deleteProduct: (id) =>
     req(`/products/${id}`, { method: 'DELETE' }),
+
+  getProduct: (id) => req(`/products/${id}`),
+  getProductOffers: (id) => req(`/products/${id}/offers`),
 }

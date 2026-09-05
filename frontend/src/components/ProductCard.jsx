@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
+import { useCompare } from '../App'
 
 const LABEL_CLASS = {
   'Exact Match': 'label-exact',
@@ -9,13 +11,16 @@ const LABEL_CLASS = {
 
 export default function ProductCard({ product }) {
   const {
-    name, brand, model, category, image_url,
+    id, name, brand, model, category, image_url,
     match_score, match_label,
     lowest_price, price, store,
     retailer_count = 0, offers = [],
   } = product
 
   const [expanded, setExpanded] = useState(false)
+  const { compareIds, toggleCompare } = useCompare()
+  const inCompare = compareIds.includes(id)
+  const compareFull = compareIds.length >= 3 && !inCompare
 
   const displayPrice = lowest_price ?? price
   const labelClass = LABEL_CLASS[match_label] ?? 'label-alt'
@@ -31,7 +36,7 @@ export default function ProductCard({ product }) {
         {match_label && (
           <span className={`match-label ${labelClass}`}>{match_label}</span>
         )}
-        <div className="product-name">{name}</div>
+        <Link to={`/product/${id}`} className="product-name" style={{ display: 'block', color: 'inherit' }}>{name}</Link>
         <div className="product-meta">{brand} · {model} · {category}</div>
         <div className="product-footer">
           {displayPrice != null
@@ -50,6 +55,17 @@ export default function ProductCard({ product }) {
               {match_score}%
             </div>
           )}
+        </div>
+
+        <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <button
+            className={`btn btn-sm ${inCompare ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => toggleCompare(id)}
+            disabled={compareFull}
+            title={compareFull ? 'Remove a product to add another' : inCompare ? 'Remove from compare' : 'Add to compare'}
+          >
+            {inCompare ? '✓ Comparing' : compareFull ? 'Compare full' : 'Compare'}
+          </button>
         </div>
 
         {offers.length > 0 && (
