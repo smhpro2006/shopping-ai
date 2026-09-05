@@ -19,7 +19,7 @@ from backend.app.core.database import Base, engine
 from backend.app.models.product import Product
 from backend.app.models.retailer import Retailer
 from backend.app.models.offer import Offer
-from backend.app.product_matching import calculate_match_score, _variant_tokens
+from backend.app.product_matching import calculate_match_score, _variant_tokens, normalize
 from collector.ebay_client import EbayClient, EbayAuthError
 from collector.ebay_search import EbayListing, parse_listings, build_search_query
 
@@ -168,6 +168,13 @@ def run_once(
             for listing in listings:
                 score = _score_listing(listing, p_dict)
                 if score < COLLECTOR_MIN_MATCH_SCORE:
+                    stats.no_match_count += 1
+                    continue
+                # Hard gate: canonical model must appear literally in the listing title.
+                # The 85-score threshold bypasses the endpoint-level category cap, so
+                # without this a WF listing can be stored against a WH canonical product.
+                if normalize(product.model) not in normalize(listing.title):
+                    logger.debug("Model not in title — skipping: %s", listing.title)
                     stats.no_match_count += 1
                     continue
                 if not _bidirectional_variant_check(search_query, listing.title, p_dict):
