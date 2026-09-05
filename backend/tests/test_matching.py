@@ -132,25 +132,90 @@ class TestAirPods:
 # Do not relax thresholds without updating CLAUDE.md.
 
 class TestPermanentSearchQueries:
+    # Actual scores as of last run: sony xm5→100, Sony WH-1000XM5→100,
+    # WH1000XM5→70, AirPods Pro 2→70, Samsung Galaxy Buds3 Pro→100.
+    # Thresholds give ≤5 points of tuning margin.
+
     def test_sony_xm5(self):
         score = calculate_match_score("sony xm5", SONY)
-        assert score >= 70, f"got {score}"
+        assert score >= 95, f"got {score}"
 
     def test_sony_wh1000xm5_with_hyphens(self):
         score = calculate_match_score("Sony WH-1000XM5", SONY)
-        assert score >= 90, f"got {score}"
+        assert score >= 95, f"got {score}"
 
     def test_wh1000xm5_no_brand(self):
         score = calculate_match_score("WH1000XM5", SONY)
-        assert score >= 60, f"got {score}"
+        assert score >= 65, f"got {score}"
 
     def test_airpods_pro_2(self):
         score = calculate_match_score("AirPods Pro 2", APPLE)
-        assert score >= 60, f"got {score}"
+        assert score >= 65, f"got {score}"
 
     def test_samsung_galaxy_buds3_pro(self):
         score = calculate_match_score("Samsung Galaxy Buds3 Pro", SAMSUNG)
-        assert score >= 70, f"got {score}"
+        assert score >= 95, f"got {score}"
+
+
+class TestPermanentSearchQueriesEndpoint:
+    """Endpoint-level coverage for the five permanent queries.
+
+    These exercise what the direct-call tests cannot: category cap,
+    anchor logic, result ordering, and match_label serialisation.
+    """
+
+    WH_NAME = "Sony WH-1000XM5 Wireless Noise Cancelling Headphones"
+    AIRPODS_NAME = "Apple AirPods Pro 2nd Generation"
+    BUDS3_NAME = "Samsung Galaxy Buds3 Pro Wireless Earbuds"
+
+    def _find(self, results, name):
+        return next((r for r in results if r["name"] == name), None)
+
+    def test_sony_xm5_endpoint(self, client):
+        r = client.get("/api/v1/search?q=sony+xm5")
+        assert r.status_code == 200
+        results = r.json()["results"]
+        assert results, "no results"
+        assert results[0]["name"] == self.WH_NAME, f"expected WH first, got {results[0]['name']}"
+        assert results[0]["match_score"] >= 95, f"got {results[0]['match_score']}"
+        assert results[0]["match_label"] == "Exact Match"
+
+    def test_sony_wh1000xm5_endpoint(self, client):
+        r = client.get("/api/v1/search?q=Sony+WH-1000XM5")
+        assert r.status_code == 200
+        results = r.json()["results"]
+        assert results, "no results"
+        assert results[0]["name"] == self.WH_NAME, f"expected WH first, got {results[0]['name']}"
+        assert results[0]["match_score"] >= 95
+        assert results[0]["match_label"] == "Exact Match"
+
+    def test_wh1000xm5_no_brand_endpoint(self, client):
+        r = client.get("/api/v1/search?q=WH1000XM5")
+        assert r.status_code == 200
+        results = r.json()["results"]
+        wh = self._find(results, self.WH_NAME)
+        assert wh is not None, "WH-1000XM5 not in results"
+        assert wh["match_score"] >= 65, f"got {wh['match_score']}"
+        assert wh["match_label"] == "Similar"
+        assert results[0]["name"] == self.WH_NAME, "WH should lead on brand-free exact-model query"
+
+    def test_airpods_pro_2_endpoint(self, client):
+        r = client.get("/api/v1/search?q=AirPods+Pro+2")
+        assert r.status_code == 200
+        results = r.json()["results"]
+        ap = self._find(results, self.AIRPODS_NAME)
+        assert ap is not None, "AirPods Pro 2 not in results"
+        assert ap["match_score"] >= 65, f"got {ap['match_score']}"
+        assert results[0]["name"] == self.AIRPODS_NAME, "AirPods Pro 2 should lead"
+
+    def test_samsung_galaxy_buds3_pro_endpoint(self, client):
+        r = client.get("/api/v1/search?q=Samsung+Galaxy+Buds3+Pro")
+        assert r.status_code == 200
+        results = r.json()["results"]
+        assert results, "no results"
+        assert results[0]["name"] == self.BUDS3_NAME, f"expected Buds3 Pro first, got {results[0]['name']}"
+        assert results[0]["match_score"] >= 95
+        assert results[0]["match_label"] == "Exact Match"
 
 
 # ── Variant distinction ───────────────────────────────────────────────────────
