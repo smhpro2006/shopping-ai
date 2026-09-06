@@ -16,17 +16,48 @@ const ROWS = [
   { label: 'Category', key: 'category' },
 ]
 
+const MAX_SLOTS = 3
+
+function conditionSummary(offers) {
+  if (!offers || offers.length === 0) return '—'
+  const counts = {}
+  for (const o of offers) {
+    const c = o.condition || 'unknown'
+    counts[c] = (counts[c] || 0) + 1
+  }
+  return Object.entries(counts)
+    .map(([c, n]) => `${n} ${c}`)
+    .join(' · ')
+}
+
+function cheapestOfCondition(offers, condition) {
+  if (!offers || offers.length === 0) return null
+  const filtered = offers.filter(o => o.condition === condition)
+  if (filtered.length === 0) return null
+  return filtered.reduce((a, b) => a.price < b.price ? a : b)
+}
+
 export default function ComparePage() {
   const { compareIds, toggleCompare, clearCompare } = useCompare()
   const [products, setProducts] = useState([])
+  const [offersByProduct, setOffersByProduct] = useState({})
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
-    if (compareIds.length === 0) { setProducts([]); return }
+    if (compareIds.length === 0) { setProducts([]); setOffersByProduct({}); return }
     setLoading(true)
     Promise.all(compareIds.map(id => api.getProduct(id)))
-      .then(setProducts)
+      .then(prods => {
+        setProducts(prods)
+        // Fetch offers for each product in parallel
+        return Promise.all(prods.map(p => api.getProductOffers(p.id).then(o => [p.id, o || []])))
+      })
+      .then(pairs => {
+        const map = {}
+        for (const [id, offers] of pairs) map[id] = offers
+        setOffersByProduct(map)
+      })
       .finally(() => setLoading(false))
   }, [compareIds])
 
@@ -47,6 +78,9 @@ export default function ComparePage() {
     )
   }
 
+  // Build the full list of columns: real products + placeholder slots
+  const emptySlots = MAX_SLOTS - compareIds.length
+
   return (
     <div className="page-wide">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
@@ -65,9 +99,14 @@ export default function ComparePage() {
       {loading
         ? <div className="loading"><div className="spinner" /></div>
         : (
-          <div className="compare-grid">
+          <div className="compare-grid" style={{ gridTemplateColumns: `repeat(${MAX_SLOTS}, 1fr)` }}>
+            {/* Real product columns */}
             {products.map((product, i) => {
               const lowestPrice = product.lowest_price ?? null
+              const offers = offersByProduct[product.id] || []
+              const cheapestNew = cheapestOfCondition(offers, 'new')
+              const cheapestUsed = cheapestOfCondition(offers, 'used')
+
               return (
                 <div key={product.id} className="compare-col">
                   <div className="compare-col-header">
@@ -110,7 +149,9 @@ export default function ComparePage() {
                         <div style={{ flex: 1, padding: '0.6rem 0.75rem' }}>{product[key] ?? '—'}</div>
                       </div>
                     ))}
-                    <div style={{ display: 'flex', fontSize: '0.85rem' }}>
+
+                    {/* Retailers row */}
+                    <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', fontSize: '0.85rem' }}>
                       <div style={{
                         width: 90, flexShrink: 0, padding: '0.6rem 0.75rem',
                         fontWeight: 500, color: 'var(--text-muted)',
@@ -121,10 +162,76 @@ export default function ComparePage() {
                         {product.retailer_count > 0 ? `${product.retailer_count} retailer${product.retailer_count !== 1 ? 's' : ''}` : '—'}
                       </div>
                     </div>
+
+                    {/* Condition breakdown row */}
+                    <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', fontSize: '0.85rem' }}>
+                      <div style={{
+                        width: 90, flexShrink: 0, padding: '0.6rem 0.75rem',
+                        fontWeight: 500, color: 'var(--text-muted)',
+                        background: 'var(--bg)', borderRight: '1px solid var(--border)',
+                        fontSize: '0.78rem',
+                      }}>Condition</div>
+                      <div style={{ flex: 1, padding: '0.6rem 0.75rem', fontSize: '0.8rem' }}>
+                        {conditionSummary(offers)}
+                      </div>
+                    </div>
+
+                    {/* New from row */}
+                    <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', fontSize: '0.85rem' }}>
+                      <div style={{
+                        width: 90, flexShrink: 0, padding: '0.6rem 0.75rem',
+                        fontWeight: 500, color: 'var(--text-muted)',
+                        background: 'var(--bg)', borderRight: '1px solid var(--border)',
+                        fontSize: '0.78rem',
+                      }}>New from</div>
+                      <div style={{ flex: 1, padding: '0.6rem 0.75rem', fontWeight: cheapestNew ? 600 : 400 }}>
+                        {cheapestNew ? `$${cheapestNew.price.toFixed(2)}` : '—'}
+                      </div>
+                    </div>
+
+                    {/* Used from row */}
+                    <div style={{ display: 'flex', fontSize: '0.85rem' }}>
+                      <div style={{
+                        width: 90, flexShrink: 0, padding: '0.6rem 0.75rem',
+                        fontWeight: 500, color: 'var(--text-muted)',
+                        background: 'var(--bg)', borderRight: '1px solid var(--border)',
+                        fontSize: '0.78rem',
+                      }}>Used from</div>
+                      <div style={{ flex: 1, padding: '0.6rem 0.75rem', fontWeight: cheapestUsed ? 600 : 400 }}>
+                        {cheapestUsed ? `$${cheapestUsed.price.toFixed(2)}` : '—'}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )
             })}
+
+            {/* Placeholder columns for empty slots */}
+            {Array.from({ length: emptySlots }).map((_, i) => (
+              <div key={`placeholder-${i}`} className="compare-col" style={{ opacity: 0.6 }}>
+                <Link to="/" style={{ textDecoration: 'none' }}>
+                  <div style={{
+                    border: '2px dashed var(--border)',
+                    borderRadius: 10,
+                    padding: '2rem 1rem',
+                    textAlign: 'center',
+                    color: 'var(--text-muted)',
+                    fontSize: '0.9rem',
+                    cursor: 'pointer',
+                    transition: 'border-color 0.15s, color 0.15s',
+                    minHeight: 160,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.5rem',
+                  }}>
+                    <div style={{ fontSize: '1.5rem' }}>+</div>
+                    <div>Add a product</div>
+                  </div>
+                </Link>
+              </div>
+            ))}
           </div>
         )}
     </div>
