@@ -105,11 +105,18 @@ def _is_accessory(title: str) -> bool:
     """True if the listing title contains an accessory or junk indicator.
 
     Word-level check runs first and is word-boundary safe — 'cover' will not
-    fire on 'Over-Ear'. Phrase-level check catches multi-word patterns that
-    are only meaningful when their constituent words appear adjacent.
+    fire on 'Over-Ear'. Each token is also checked in singular form (trailing
+    's' stripped) so "stands"→"stand", "cases"→"case", "chargers"→"charger".
+    Phrase-level check catches multi-word patterns that are only meaningful
+    when their constituent words appear adjacent.
     """
-    words = frozenset(re.findall(r'[a-z0-9]+', title.lower()))
-    if words & ACCESSORY_WORD_KEYWORDS:
+    tokens = re.findall(r'[a-z0-9]+', title.lower())
+    # Build a set of canonical forms: original token and singular (s-stripped).
+    # len > 2 guard avoids stripping from short tokens like "as", "is".
+    canonical = frozenset(tokens) | frozenset(
+        t[:-1] for t in tokens if t.endswith('s') and len(t) > 2
+    )
+    if canonical & ACCESSORY_WORD_KEYWORDS:
         return True
     compressed = normalize(title)
     return any(phrase in compressed for phrase in ACCESSORY_PHRASE_KEYWORDS)

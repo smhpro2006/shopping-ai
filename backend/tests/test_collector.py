@@ -318,6 +318,20 @@ class TestAccessoryKeywordBlocklist:
     def test_apple_airpods_max_not_rejected(self):
         assert not _is_accessory("Apple AirPods Max Wireless Over-Ear Headphones Space Gray")
 
+    # Plural form normalisation — "stands"→"stand", "cases"→"case", etc.
+    def test_floor_stand_plural_rejected(self):
+        # Actual dry-run false acceptance: floor stand accessory for Sonos Era 100
+        assert _is_accessory("Sanus WSSE12 Fixed-Height Speaker Floor Stands for Sonos Era 100")
+
+    def test_cases_plural_rejected(self):
+        assert _is_accessory("Hard Cases for Sony WH-1000XM5 Headphones Travel")
+
+    def test_chargers_plural_rejected(self):
+        assert _is_accessory("Replacement Chargers for JBL Charge 5 Speaker USB-C")
+
+    def test_adapters_plural_rejected(self):
+        assert _is_accessory("AC Adapters Compatible with Ultimate Ears Hyperboom")
+
 
 class TestCategoryPriceFloor:
     def test_headphones_below_floor_rejected(self):

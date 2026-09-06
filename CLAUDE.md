@@ -678,6 +678,13 @@ category price floor. This surfaces outliers in dry-run output without rejecting
 If a ceiling is revisited in Phase 7, it must operate per-condition and per-product with
 sufficient historical samples (≥30 per condition group) to be statistically meaningful.
 
+**Known outliers to watch once price history accumulates:**
+- Jabra Elite 10: a $449.98 listing appeared in run 3 (11.2× the earbuds price floor,
+  condition: unknown). Likely a bundle or listing error. Flag it when price history starts
+  populating — if it persists as the highest stored price it will skew deal scoring.
+- Sonos Era 300: 1 candidate at $689 (retail ~$449). With a single sample there is no basis
+  for rejection now, but it should be a clear outlier once 30+ data points accumulate.
+
 **Known collector gaps (pre-existing, not yet addressed):**
 - `adapter` word keyword rejects "HYPERBOOM /NO POWER ADAPTER-" — a real speaker listed without
   its charger. Distinguishing "charger for product" from "product sold without charger" requires
