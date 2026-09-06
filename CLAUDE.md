@@ -685,6 +685,24 @@ sufficient historical samples (≥30 per condition group) to be statistically me
 - Sonos Era 300: 1 candidate at $689 (retail ~$449). With a single sample there is no basis
   for rejection now, but it should be a clear outlier once 30+ data points accumulate.
 
+**Condition-group storage gap — must fix before Phase 7 (noted 2026-09-06):**
+All 87 offers written in the first live run were used/unknown condition. Zero new-condition offers
+landed. Root cause: `COLLECTOR_OFFERS_PER_PRODUCT=5` keeps the cheapest 5 across all conditions,
+and used listings are always cheaper than new. The price ceiling was removed to stop excluding new
+listings — but they're still absent, for a different reason.
+Impact: `lowest_price` shown to users is the used market price, not the new price. Deal Score and
+Buy/Wait will be calibrated against used pricing only. This is a product accuracy failure.
+Fix: store the top-N **per condition group** (new, used, refurbished each get a separate quota,
+e.g. `COLLECTOR_OFFERS_PER_CONDITION=3`). Do not fix during collection bringup, but fix before
+Phase 7 (price history) begins — every run without new-condition data is history that cannot be
+recovered. See collector design notes in this section.
+
+**Brand-only query label (noted 2026-09-06):**
+Queries like "Sony" score 35 / Alternative for every result — correct behaviour from the brand
+gate (score capped at 70 without model signal, then further filtered), but the "Alternative" label
+may confuse users browsing by brand who expect all Sony products to be "Exact Match". Revisit the
+label mapping or add a UI note for brand-only queries in Phase 17 (frontend).
+
 **Known collector gaps (pre-existing, not yet addressed):**
 - `adapter` word keyword rejects "HYPERBOOM /NO POWER ADAPTER-" — a real speaker listed without
   its charger. Distinguishing "charger for product" from "product sold without charger" requires
