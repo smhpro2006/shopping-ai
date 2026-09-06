@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from collector.ebay_search import normalize_condition, parse_listings, build_search_query
-from collector.runner import _bidirectional_variant_check, _score_listing
+from collector.runner import _bidirectional_variant_check, _score_listing, _top_offers_by_condition
 from collector.ebay_client import EbayAuthError, EbayClient
 
 
@@ -229,6 +229,7 @@ from collector.runner import (  # noqa: E402
     _is_accessory, _below_price_floor, _normalize_roman,
     CATEGORY_PRICE_FLOORS,
 )
+from collector.ebay_client import EbayRateLimitError  # noqa: E402
 
 
 class TestWritesEnabledDefault:
@@ -485,3 +486,159 @@ class TestNormalizeRoman:
         model = "Galaxy Buds2 Pro"
         # "Buds2" normalizes to "buds2", "Buds II" after expansion is "Buds 2" → "buds2"
         assert normalize(model) in normalize(_normalize_roman(listing))
+
+
+# ── Per-condition offer selection ─────────────────────────────────────────────
+
+def _make_listing(condition: str, price: float, score: int = 90):
+    from collector.ebay_search import EbayListing
+    l = EbayListing(
+        item_id=f"{condition}-{price}",
+        title="Test Product",
+        price=price,
+        currency="USD",
+        condition=condition,
+        url="",
+        retailer_name="shop",
+    )
+    l.match_score = score
+    return l
+
+
+class TestTopOffersByCondition:
+    def test_each_condition_gets_own_quota(self):
+        candidates = [
+            _make_listing("new", 300.0),
+            _make_listing("new", 310.0),
+            _make_listing("new", 320.0),
+            _make_listing("new", 330.0),  # 4th new — should be cut
+            _make_listing("used", 150.0),
+            _make_listing("used", 160.0),
+            _make_listing("used", 170.0),
+            _make_listing("used", 180.0),  # 4th used — should be cut
+        ]
+        result = _top_offers_by_condition(candidates, per_condition=3)
+        new_results = [l for l in result if l.condition == "new"]
+        used_results = [l for l in result if l.condition == "used"]
+        assert len(new_results) == 3
+        assert len(used_results) == 3
+
+    def test_cheapest_within_condition_preferred(self):
+        candidates = [
+            _make_listing("used", 200.0, score=90),
+            _make_listing("used", 150.0, score=90),
+            _make_listing("used", 175.0, score=90),
+        ]
+        result = _top_offers_by_condition(candidates, per_condition=2)
+        prices = [l.price for l in result]
+        assert 150.0 in prices
+        assert 175.0 in prices
+        assert 200.0 not in prices
+
+    def test_higher_score_beats_lower_price(self):
+        candidates = [
+            _make_listing("new", 100.0, score=88),
+            _make_listing("new", 200.0, score=95),
+        ]
+        result = _top_offers_by_condition(candidates, per_condition=1)
+        assert result[0].price == 200.0
+
+    def test_unknown_gets_own_quota_not_merged_with_used(self):
+        candidates = [
+            _make_listing("used", 100.0),
+            _make_listing("used", 110.0),
+            _make_listing("used", 120.0),
+            _make_listing("unknown", 90.0),
+            _make_listing("unknown", 95.0),
+        ]
+        result = _top_offers_by_condition(candidates, per_condition=3)
+        unknown_results = [l for l in result if l.condition == "unknown"]
+        used_results = [l for l in result if l.condition == "used"]
+        assert len(unknown_results) == 2
+        assert len(used_results) == 3
+
+    def test_empty_candidates_returns_empty(self):
+        assert _top_offers_by_condition([], per_condition=3) == []
+
+    def test_fewer_candidates_than_quota_all_kept(self):
+        candidates = [_make_listing("new", 300.0), _make_listing("new", 310.0)]
+        result = _top_offers_by_condition(candidates, per_condition=5)
+        assert len(result) == 2
+
+    def test_refurbished_included_independently(self):
+        candidates = [
+            _make_listing("new", 300.0),
+            _make_listing("used", 150.0),
+            _make_listing("refurbished", 200.0),
+        ]
+        result = _top_offers_by_condition(candidates, per_condition=3)
+        conditions = {l.condition for l in result}
+        assert conditions == {"new", "used", "refurbished"}
+
+
+# ── Call budget ────────────────────────────────────────────────────────────────
+
+class TestCallBudget:
+    """Verify the per-run call counter and budget abort logic."""
+
+    # Total products in the seed DB (from backend/app/products.py PRODUCTS list)
+    _TOTAL_PRODUCTS = 20
+
+    def _mock_ebay(self, search_side_effect=None, search_return=None):
+        """Return (mock_cls, mock_ebay) using the same pattern as TestFailFastOnAuthError."""
+        mock_ebay = MagicMock()
+        if search_side_effect is not None:
+            mock_ebay.search.side_effect = search_side_effect
+        else:
+            mock_ebay.search.return_value = search_return if search_return is not None else {}
+        mock_cls = MagicMock()
+        mock_cls.return_value.__enter__.return_value = mock_ebay
+        return mock_cls, mock_ebay
+
+    def test_calls_made_tracked_in_stats(self, client):
+        """One ebay.search() call per product — stats.calls_made must equal product count."""
+        from collector.runner import run_once
+        mock_cls, _ = self._mock_ebay(search_return={"itemSummaries": []})
+        with patch("collector.runner.EbayClient", mock_cls):
+            stats = run_once(dry_run=True)
+        assert stats.calls_made == self._TOTAL_PRODUCTS, (
+            f"Expected {self._TOTAL_PRODUCTS} calls (one per product), got {stats.calls_made}"
+        )
+
+    def test_abort_when_budget_exhausted(self, client):
+        """When COLLECTOR_MAX_CALLS_PER_RUN is 2, only 2 products should be searched."""
+        from collector.runner import run_once
+        mock_cls, _ = self._mock_ebay(search_return={"itemSummaries": []})
+        with patch("collector.runner.EbayClient", mock_cls), \
+             patch("collector.runner.COLLECTOR_MAX_CALLS_PER_RUN", 2):
+            stats = run_once(dry_run=True)
+        # Must have made at most 2 calls (the budget limit)
+        assert stats.calls_made <= 2, (
+            f"Expected ≤2 calls with budget=2, got {stats.calls_made}"
+        )
+        # Must have processed fewer than all products
+        assert stats.products_processed < self._TOTAL_PRODUCTS, (
+            f"Expected fewer than {self._TOTAL_PRODUCTS} products processed, "
+            f"got {stats.products_processed}"
+        )
+
+    def test_rate_limit_error_is_transient(self, client):
+        """EbayRateLimitError on the first call should be counted as an error;
+        the run should continue and process subsequent products."""
+        from collector.runner import run_once
+        call_count = [0]
+
+        def flaky_search(query, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise EbayRateLimitError("rate limited")
+            return {"itemSummaries": []}
+
+        mock_cls, _ = self._mock_ebay(search_side_effect=flaky_search)
+        with patch("collector.runner.EbayClient", mock_cls):
+            stats = run_once(dry_run=True)
+
+        assert stats.error_count >= 1, "Expected at least 1 error recorded for rate limit"
+        assert stats.calls_made > 1, (
+            f"Expected >1 calls (run should continue past rate limit error), got {stats.calls_made}"
+        )

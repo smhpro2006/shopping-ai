@@ -1,6 +1,7 @@
 """eBay Browse API client with OAuth 2.0 client-credentials token management."""
 
 import base64
+import logging
 import time
 import httpx
 
@@ -13,8 +14,16 @@ _PRODUCTION_SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search
 _SCOPE = "https://api.ebay.com/oauth/api_scope"
 _MARKETPLACE = "EBAY-US"
 
+logger = logging.getLogger("collector.ebay_client")
+
+_RATE_LIMIT_RETRY_WAITS = (30, 60, 120)
+
 
 class EbayAuthError(Exception):
+    pass
+
+
+class EbayRateLimitError(Exception):
     pass
 
 
@@ -67,23 +76,37 @@ class EbayClient:
     # ── public API ───────────────────────────────────────────────────────────
 
     def search(self, query: str, limit: int = 20) -> dict:
-        """Call Browse API item_summary/search and return the raw response dict."""
-        token = self._ensure_token()
-        resp = self._http.get(
-            self._search_url(),
-            headers={
-                "Authorization": f"Bearer {token}",
-                "X-EBAY-C-MARKETPLACE-ID": _MARKETPLACE,
-                "X-EBAY-C-ENDUSERCTX": "affiliateCampaignId=0",
-            },
-            params={
-                "q": query,
-                "limit": limit,
-                "filter": "buyingOptions:{FIXED_PRICE}",
-            },
+        """Call Browse API item_summary/search and return the raw response dict.
+
+        Retries up to 3 times on HTTP 429 with exponential back-off (30/60/120 s).
+        Raises EbayRateLimitError if all retries are exhausted.
+        """
+        for attempt, wait in enumerate(_RATE_LIMIT_RETRY_WAITS, start=1):
+            token = self._ensure_token()
+            resp = self._http.get(
+                self._search_url(),
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "X-EBAY-C-MARKETPLACE-ID": _MARKETPLACE,
+                    "X-EBAY-C-ENDUSERCTX": "affiliateCampaignId=0",
+                },
+                params={
+                    "q": query,
+                    "limit": limit,
+                    "filter": "buyingOptions:{FIXED_PRICE}",
+                },
+            )
+            if resp.status_code != 429:
+                resp.raise_for_status()
+                return resp.json()
+            logger.warning(
+                "eBay 429 rate limit — retry %d/3 in %ds", attempt, wait
+            )
+            time.sleep(wait)
+
+        raise EbayRateLimitError(
+            f"eBay rate limit exceeded after 3 retries for query: {query!r}"
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def close(self) -> None:
         self._http.close()

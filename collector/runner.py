@@ -13,16 +13,17 @@ from backend.app.core.config import (
     EBAY_APP_ID,
     EBAY_CERT_ID,
     EBAY_ENVIRONMENT,
-    COLLECTOR_OFFERS_PER_PRODUCT,
+    COLLECTOR_OFFERS_PER_CONDITION,
     COLLECTOR_MIN_MATCH_SCORE,
     COLLECTOR_WRITES_ENABLED,
+    COLLECTOR_MAX_CALLS_PER_RUN,
 )
 from backend.app.core.database import Base, engine
 from backend.app.models.product import Product
 from backend.app.models.retailer import Retailer
 from backend.app.models.offer import Offer
 from backend.app.product_matching import calculate_match_score, _variant_tokens, normalize
-from collector.ebay_client import EbayClient, EbayAuthError
+from collector.ebay_client import EbayClient, EbayAuthError, EbayRateLimitError
 from collector.ebay_search import EbayListing, parse_listings, build_search_query
 
 from sqlalchemy.orm import Session, joinedload
@@ -134,6 +135,7 @@ class RunStats:
     offers_stored: int = 0
     no_match_count: int = 0
     error_count: int = 0
+    calls_made: int = 0
     skipped_products: list[str] = field(default_factory=list)
 
 
@@ -160,6 +162,28 @@ def _bidirectional_variant_check(query: str, listing_title: str, product: dict) 
         return False
 
     return True
+
+
+def _top_offers_by_condition(
+    candidates: list[EbayListing],
+    per_condition: int,
+) -> list[EbayListing]:
+    """Select the top per_condition offers from each condition group independently.
+
+    Groups: new, used, refurbished, unknown.  'unknown' gets its own quota —
+    not merged with 'used' because eBay 'unknown' can be new-in-box; merging
+    would make an unverifiable assumption about the actual condition.
+    Within each group, sort by score desc then price asc.
+    """
+    by_condition: dict[str, list[EbayListing]] = {}
+    for listing in candidates:
+        by_condition.setdefault(listing.condition, []).append(listing)
+    result: list[EbayListing] = []
+    for condition_group in sorted(by_condition):
+        group = by_condition[condition_group]
+        group.sort(key=lambda l: (-l.match_score, l.price))
+        result.extend(group[:per_condition])
+    return result
 
 
 def _score_listing(listing: EbayListing, product: dict) -> int:
@@ -222,6 +246,7 @@ def run_once(
         verbose: Log individual listing details.
     """
     stats = RunStats()
+    calls_made = 0
 
     # Guard 1: writes must be explicitly opted in via env var.
     if not COLLECTOR_WRITES_ENABLED and not dry_run:
@@ -262,6 +287,15 @@ def run_once(
 
     with EbayClient(EBAY_APP_ID, EBAY_CERT_ID, EBAY_ENVIRONMENT) as ebay:
         for product in products:
+            # Call budget guard: abort before making the next API call.
+            if calls_made >= COLLECTOR_MAX_CALLS_PER_RUN:
+                remaining = len(products) - stats.products_processed
+                logger.warning(
+                    "Call budget exhausted (%d calls). Skipping %d remaining products.",
+                    calls_made, remaining,
+                )
+                break
+
             stats.products_processed += 1
             p_dict = {
                 "brand": product.brand,
@@ -276,6 +310,7 @@ def run_once(
             except EbayAuthError:
                 # Not transient — invalid_client will fail for every subsequent
                 # product with identical credentials. Abort immediately.
+                calls_made += 1
                 logger.error(
                     "AUTH FAILURE on eBay %s (%s) — credentials rejected. "
                     "Check that EBAY_APP_ID / EBAY_CERT_ID match "
@@ -283,11 +318,14 @@ def run_once(
                     EBAY_ENVIRONMENT, ebay_base, EBAY_ENVIRONMENT,
                 )
                 raise
-            except Exception as exc:
+            except (EbayRateLimitError, Exception) as exc:
+                calls_made += 1
                 logger.error("eBay search failed for %s %s: %s", product.brand, product.model, exc)
                 stats.error_count += 1
                 stats.skipped_products.append(f"{product.brand} {product.model}")
                 continue
+            else:
+                calls_made += 1
 
             listings = parse_listings(raw)
             candidates: list[EbayListing] = []
@@ -349,9 +387,14 @@ def run_once(
                         score, listing.title[:60], listing.price, listing.condition,
                     )
 
-            # Sort: score desc, price asc; keep top N
-            candidates.sort(key=lambda l: (-l.match_score, l.price))
-            top = candidates[:COLLECTOR_OFFERS_PER_PRODUCT]
+            top = _top_offers_by_condition(candidates, COLLECTOR_OFFERS_PER_CONDITION)
+
+            condition_counts = {}
+            for l in top:
+                condition_counts[l.condition] = condition_counts.get(l.condition, 0) + 1
+            condition_summary = " ".join(
+                f"{cond}={n}" for cond, n in sorted(condition_counts.items())
+            ) or "none"
 
             with Session(db_engine) as db:
                 db_product = db.query(Product).filter(Product.id == product.id).first()
@@ -359,10 +402,15 @@ def run_once(
 
             stats.offers_stored += stored
             logger.info(
-                "%s %s — %d candidates, %d stored%s",
+                "%s %s — %d candidates, %d stored [%s]%s",
                 product.brand, product.model,
-                len(candidates), stored,
+                len(candidates), stored, condition_summary,
                 " (dry-run)" if dry_run else "",
             )
 
+    stats.calls_made = calls_made
+    logger.info(
+        "Run complete — %d eBay API calls made (%.0f/day at 12-h schedule).",
+        calls_made, calls_made * 2,
+    )
     return stats

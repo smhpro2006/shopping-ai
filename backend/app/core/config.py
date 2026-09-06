@@ -19,11 +19,12 @@ class Settings(BaseSettings):
     EBAY_ENVIRONMENT: str = "sandbox"  # "sandbox" or "production"
 
     # Collector tuning
-    COLLECTOR_OFFERS_PER_PRODUCT: int = 5
+    COLLECTOR_OFFERS_PER_CONDITION: int = 3
     COLLECTOR_MIN_MATCH_SCORE: int = 85
     # Must be explicitly set true in .env before any write is allowed.
     # Default false means a fresh environment never accidentally writes.
     COLLECTOR_WRITES_ENABLED: bool = False
+    COLLECTOR_MAX_CALLS_PER_RUN: int = 2500
 
     model_config = SettingsConfigDict(env_file=str(_ENV_FILE), extra="ignore")
 
@@ -39,9 +40,10 @@ ALGORITHM = settings.ALGORITHM
 EBAY_APP_ID = settings.EBAY_APP_ID
 EBAY_CERT_ID = settings.EBAY_CERT_ID
 EBAY_ENVIRONMENT = settings.EBAY_ENVIRONMENT
-COLLECTOR_OFFERS_PER_PRODUCT = settings.COLLECTOR_OFFERS_PER_PRODUCT
+COLLECTOR_OFFERS_PER_CONDITION = settings.COLLECTOR_OFFERS_PER_CONDITION
 COLLECTOR_MIN_MATCH_SCORE = settings.COLLECTOR_MIN_MATCH_SCORE
 COLLECTOR_WRITES_ENABLED = settings.COLLECTOR_WRITES_ENABLED
+COLLECTOR_MAX_CALLS_PER_RUN = settings.COLLECTOR_MAX_CALLS_PER_RUN
 
 # psycopg3 (psycopg[binary]) requires the +psycopg dialect prefix.
 # Railway injects DATABASE_URL as postgresql:// (psycopg2 convention).
