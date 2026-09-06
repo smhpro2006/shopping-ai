@@ -8,6 +8,7 @@ import DashboardPage from './pages/DashboardPage'
 import AccountPage from './pages/AccountPage'
 import ProductPage from './pages/ProductPage'
 import ComparePage from './pages/ComparePage'
+import DealsPage from './pages/DealsPage'
 import { api } from './api'
 
 export const AuthContext = createContext(null)
@@ -64,6 +65,7 @@ export default function App() {
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/product/:id" element={<ProductPage />} />
             <Route path="/compare" element={<ComparePage />} />
+            <Route path="/deals" element={<DealsPage />} />
             <Route path="/dashboard" element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
             <Route path="/account" element={<PrivateRoute><AccountPage /></PrivateRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />

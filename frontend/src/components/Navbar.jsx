@@ -20,6 +20,7 @@ export default function Navbar() {
       <Link to="/" className="navbar-brand">Shopping AI</Link>
       <div className="navbar-links">
         <Link to="/" className={isActive('/')}>Search</Link>
+        <Link to="/deals" className={isActive('/deals')}>Deals</Link>
         {compareIds.length > 0 && (
           <Link to="/compare" className={isActive('/compare')} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
             Compare

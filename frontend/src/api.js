@@ -44,4 +44,5 @@ export const api = {
 
   getProduct: (id) => req(`/products/${id}`),
   getProductOffers: (id) => req(`/products/${id}/offers`),
+  getDeals: () => req('/deals'),
 }
