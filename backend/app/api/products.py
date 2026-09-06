@@ -81,6 +81,19 @@ def search(
 
     results.sort(key=lambda p: p["match_score"], reverse=True)
 
+    # Brand-only query detection: override match_label to "Brand Match" when the
+    # query is a single token and it matches the brand of every returned result.
+    # Score is NOT changed — only the display label.
+    query_tokens = q.strip().split()
+    if len(query_tokens) == 1 and results:
+        q_lower = q.strip().lower()
+        all_brand = all(
+            r.get("brand", "").lower() == q_lower for r in results
+        )
+        if all_brand:
+            for r in results:
+                r["match_label"] = "Brand Match"
+
     # Two-pass category cap: if the top result scores >= 85, infer the query
     # category from it and cap any cross-category result above 84 to 84.
     # Below 85 at the top, the query is too ambiguous to infer category.

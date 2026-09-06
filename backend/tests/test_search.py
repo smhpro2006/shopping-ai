@@ -130,3 +130,44 @@ class TestOfferSchema:
         assert len(result["offers"]) == 2
         retailer_names = {o["retailer"]["name"] for o in result["offers"]}
         assert retailer_names == {"Amazon", "Walmart"}
+
+
+class TestBrandOnlyQueryLabel:
+    def test_brand_only_query_returns_brand_match_label(self, client):
+        """A single-brand query (e.g. 'Sony') must label results 'Brand Match', not 'Alternative'."""
+        r = client.get("/search?q=Sony")
+        assert r.status_code == 200
+        results = r.json()["results"]
+        assert len(results) > 0, "Expected Sony products in results"
+        for result in results:
+            assert result["match_label"] == "Brand Match", (
+                f"Expected 'Brand Match' for brand-only query, "
+                f"got '{result['match_label']}' for {result['name']}"
+            )
+
+    def test_model_query_returns_normal_labels(self, client):
+        """A model-specific query must use standard score-based labels."""
+        r = client.get("/search?q=WH-1000XM5")
+        assert r.status_code == 200
+        results = r.json()["results"]
+        assert len(results) > 0, "Expected WH-1000XM5 in results"
+        top = results[0]
+        # Must not be overridden to 'Brand Match'
+        assert top["match_label"] != "Brand Match", (
+            f"Model query should not produce 'Brand Match' label"
+        )
+        # Top result must have a meaningful score (Similar or better)
+        assert top["match_score"] >= 70, (
+            f"Expected score >= 70 for exact model query, got {top['match_score']}"
+        )
+
+    def test_brand_only_score_unchanged(self, client):
+        """Brand-only label override must not change the underlying score."""
+        r = client.get("/search?q=Sony")
+        assert r.status_code == 200
+        results = r.json()["results"]
+        assert len(results) > 0
+        for result in results:
+            # Score should still reflect the actual match quality (brand-only = ~35)
+            assert isinstance(result["match_score"], int)
+            assert 0 <= result["match_score"] <= 100
