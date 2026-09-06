@@ -13,6 +13,7 @@ import backend.app.models.product     # noqa: F401
 import backend.app.models.retailer    # noqa: F401
 import backend.app.models.offer       # noqa: F401
 import backend.app.models.user        # noqa: F401
+import backend.app.models.coupon      # noqa: F401
 
 config = context.config
 

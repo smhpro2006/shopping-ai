@@ -9,8 +9,9 @@ from backend.app.models.product import Product
 from backend.app.models.retailer import Retailer
 from backend.app.models.offer import Offer
 from backend.app.models.user import User  # noqa: F401
+from backend.app.models.coupon import Coupon  # noqa: F401
 from backend.app.products import PRODUCTS, RETAILERS, OFFERS
-from backend.app.api import auth, products, deals
+from backend.app.api import auth, products, deals, coupons
 
 configure_logging()
 
@@ -87,6 +88,7 @@ _v1 = APIRouter(prefix="/api/v1")
 _v1.include_router(auth.router)
 _v1.include_router(products.router)
 _v1.include_router(deals.router)
+_v1.include_router(coupons.router)
 app.include_router(_v1)
 
 # Unversioned routes kept for backward compatibility
