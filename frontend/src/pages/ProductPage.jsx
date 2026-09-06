@@ -2,11 +2,28 @@ import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { api } from '../api'
 
-const LABEL_CLASS = {
-  'Exact Match': 'label-exact',
-  'Very Similar': 'label-similar-high',
-  'Similar': 'label-similar',
-  'Alternative': 'label-alt',
+const CONDITION_BADGE = {
+  new:         { background: '#d1fae5', color: '#065f46' },
+  used:        { background: '#fef3c7', color: '#92400e' },
+  refurbished: { background: '#dbeafe', color: '#1e40af' },
+  unknown:     { background: '#f3f4f6', color: '#6b7280' },
+}
+
+const BADGE_BASE = {
+  display: 'inline-block',
+  padding: '2px 8px',
+  borderRadius: 4,
+  fontSize: '0.75rem',
+  fontWeight: 600,
+  textTransform: 'capitalize',
+}
+
+function ConditionBadge({ condition }) {
+  const key = (condition || 'unknown').toLowerCase()
+  const style = CONDITION_BADGE[key] || CONDITION_BADGE.unknown
+  return (
+    <span style={{ ...BADGE_BASE, ...style }}>{key}</span>
+  )
 }
 
 export default function ProductPage() {
@@ -18,7 +35,7 @@ export default function ProductPage() {
 
   useEffect(() => {
     Promise.all([api.getProduct(id), api.getProductOffers(id)])
-      .then(([p, o]) => { setProduct(p); setOffers(o) })
+      .then(([p, o]) => { setProduct(p); setOffers(o || []) })
       .catch(() => setError('Product not found.'))
       .finally(() => setLoading(false))
   }, [id])
@@ -63,16 +80,23 @@ export default function ProductPage() {
             </div>
           )}
           {!lowestOffer && (
-            <div style={{ marginTop: '1rem', color: 'var(--text-muted)', fontSize: '0.9rem' }}>No offers available</div>
+            <div style={{ marginTop: '1rem', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+              No current price data available.
+            </div>
           )}
         </div>
       </div>
 
-      {offers.length > 0 && (
-        <div className="section-card">
-          <div className="section-card-header">
-            Price comparison · {offers.length} retailer{offers.length !== 1 ? 's' : ''}
+      <div className="section-card">
+        <div className="section-card-header">
+          Price comparison{offers.length > 0 ? ` · ${offers.length} retailer${offers.length !== 1 ? 's' : ''}` : ''}
+        </div>
+
+        {offers.length === 0 ? (
+          <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem', padding: '1rem 0' }}>
+            No current offers. Check back later — we refresh prices every 12 hours.
           </div>
+        ) : (
           <table>
             <thead>
               <tr>
@@ -91,8 +115,8 @@ export default function ProductPage() {
                   <tr key={i}>
                     <td style={{ fontWeight: 500 }}>{offer.retailer?.name ?? 'Unknown'}</td>
                     <td style={{ fontWeight: 700, color: 'var(--primary)' }}>${offer.price.toFixed(2)}</td>
-                    <td style={{ textTransform: 'capitalize', color: 'var(--text-muted)' }}>
-                      {offer.condition ?? '—'}
+                    <td>
+                      <ConditionBadge condition={offer.condition} />
                     </td>
                     <td style={{ color: 'var(--text-muted)' }}>{offer.availability ?? '—'}</td>
                     <td>
@@ -106,8 +130,8 @@ export default function ProductPage() {
                 ))}
             </tbody>
           </table>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }
