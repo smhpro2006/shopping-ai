@@ -191,6 +191,29 @@ def _score_listing(listing: EbayListing, product: dict) -> int:
     return calculate_match_score(listing.title, product)
 
 
+def _record_run(
+    db_engine,
+    stats: RunStats,
+    started_at: datetime,
+    status: str,
+    error_detail: Optional[str] = None,
+) -> None:
+    """Persist a CollectionRun row. Imported lazily to avoid circular imports."""
+    from backend.app.models.collection_run import CollectionRun
+    with Session(db_engine) as db:
+        db.add(CollectionRun(
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            products_processed=stats.products_processed,
+            offers_stored=stats.offers_stored,
+            calls_made=stats.calls_made,
+            error_count=stats.error_count,
+            status=status,
+            error_detail=error_detail,
+        ))
+        db.commit()
+
+
 def _get_or_create_retailer(db: Session, name: str) -> Retailer:
     retailer = db.query(Retailer).filter(Retailer.name == name).first()
     if not retailer:
@@ -245,172 +268,190 @@ def run_once(
         dry_run: Fetch and score but do not write to the database.
         verbose: Log individual listing details.
     """
+    started_at = datetime.now(timezone.utc)
     stats = RunStats()
     calls_made = 0
+    _run_status = "success"
+    _run_error: Optional[str] = None
+    db_engine = None
 
-    # Guard 1: writes must be explicitly opted in via env var.
-    if not COLLECTOR_WRITES_ENABLED and not dry_run:
-        logger.warning(
-            "COLLECTOR_WRITES_ENABLED is false — forcing dry_run=True. "
-            "Set COLLECTOR_WRITES_ENABLED=true in backend/.env to enable writes."
-        )
-        dry_run = True
-
-    # Guard 2: sandbox listings are synthetic and must never reach the DB.
-    if EBAY_ENVIRONMENT.lower() == "sandbox" and not dry_run:
-        logger.warning(
-            "EBAY_ENVIRONMENT=sandbox — forcing dry_run=True. "
-            "Sandbox listings are synthetic and must never be written to the database."
-        )
-        dry_run = True
-
-    db_engine = _create_engine(DATABASE_URL)
-    Base.metadata.create_all(bind=db_engine)
-
-    with Session(db_engine) as db:
-        query_obj = db.query(Product).options(
-            joinedload(Product.offers)
-        )
-        if product_id is not None:
-            query_obj = query_obj.filter(Product.id == product_id)
-        products = query_obj.all()
-
-    ebay_base = (
-        "https://api.sandbox.ebay.com"
-        if EBAY_ENVIRONMENT.lower() == "sandbox"
-        else "https://api.ebay.com"
-    )
-    logger.info(
-        "Starting collection — environment: %s | base: %s | products: %d | dry_run: %s",
-        EBAY_ENVIRONMENT, ebay_base, len(products), dry_run,
-    )
-
-    with EbayClient(EBAY_APP_ID, EBAY_CERT_ID, EBAY_ENVIRONMENT) as ebay:
-        for product in products:
-            # Call budget guard: abort before making the next API call.
-            if calls_made >= COLLECTOR_MAX_CALLS_PER_RUN:
-                remaining = len(products) - stats.products_processed
-                logger.warning(
-                    "Call budget exhausted (%d calls). Skipping %d remaining products.",
-                    calls_made, remaining,
-                )
-                break
-
-            stats.products_processed += 1
-            p_dict = {
-                "brand": product.brand,
-                "model": product.model,
-                "name": product.name,
-                "category": product.category,
-            }
-            search_query = build_search_query(product.brand, product.model)
-
-            try:
-                raw = ebay.search(search_query, limit=50)
-            except EbayAuthError:
-                # Not transient — invalid_client will fail for every subsequent
-                # product with identical credentials. Abort immediately.
-                calls_made += 1
-                logger.error(
-                    "AUTH FAILURE on eBay %s (%s) — credentials rejected. "
-                    "Check that EBAY_APP_ID / EBAY_CERT_ID match "
-                    "EBAY_ENVIRONMENT='%s'. Aborting.",
-                    EBAY_ENVIRONMENT, ebay_base, EBAY_ENVIRONMENT,
-                )
-                raise
-            except (EbayRateLimitError, Exception) as exc:
-                calls_made += 1
-                logger.error("eBay search failed for %s %s: %s", product.brand, product.model, exc)
-                stats.error_count += 1
-                stats.skipped_products.append(f"{product.brand} {product.model}")
-                continue
-            else:
-                calls_made += 1
-
-            listings = parse_listings(raw)
-            candidates: list[EbayListing] = []
-
-            for listing in listings:
-                score = _score_listing(listing, p_dict)
-                if score < COLLECTOR_MIN_MATCH_SCORE:
-                    stats.no_match_count += 1
-                    continue
-
-                # Reject listings whose normalized title contains an accessory keyword.
-                if _is_accessory(listing.title):
-                    logger.info("REJECT [accessory] %s", listing.title[:80])
-                    stats.no_match_count += 1
-                    continue
-
-                # Reject listings priced below the per-category floor.
-                if _below_price_floor(listing.price, product.category):
-                    floor = CATEGORY_PRICE_FLOORS.get(product.category.lower(), 0.0)
-                    logger.info(
-                        "REJECT [price_floor] $%.2f < $%.2f (%s): %s",
-                        listing.price, floor, product.category, listing.title[:60],
-                    )
-                    stats.no_match_count += 1
-                    continue
-
-                # Canonical model must appear literally in the listing title.
-                # Roman numeral expansion handles "Earbuds II" matching model "Earbuds 2".
-                listing_norm = normalize(_normalize_roman(listing.title))
-                model_norm = normalize(_normalize_roman(p_dict["model"]))
-                if model_norm not in listing_norm:
-                    logger.info("REJECT [model_not_in_title] %s", listing.title[:80])
-                    stats.no_match_count += 1
-                    continue
-
-                # Bidirectional variant-token consistency check.
-                if not _bidirectional_variant_check(search_query, listing.title, p_dict):
-                    logger.info("REJECT [variant_mismatch] %s", listing.title[:80])
-                    stats.no_match_count += 1
-                    continue
-
-                listing.match_score = score
-                candidates.append(listing)
-
-                # High-price warning (informational only — never rejects).
-                floor = CATEGORY_PRICE_FLOORS.get(product.category.lower())
-                if floor and listing.price > floor * PRICE_HIGH_WATERMARK_MULTIPLIER:
-                    logger.warning(
-                        "HIGH PRICE $%.2f (%.1fx floor) [%s] %s",
-                        listing.price,
-                        listing.price / floor,
-                        listing.condition,
-                        listing.title[:60],
-                    )
-
-                if verbose:
-                    logger.info(
-                        "  [%d] %s — $%.2f (%s)",
-                        score, listing.title[:60], listing.price, listing.condition,
-                    )
-
-            top = _top_offers_by_condition(candidates, COLLECTOR_OFFERS_PER_CONDITION)
-
-            condition_counts = {}
-            for l in top:
-                condition_counts[l.condition] = condition_counts.get(l.condition, 0) + 1
-            condition_summary = " ".join(
-                f"{cond}={n}" for cond, n in sorted(condition_counts.items())
-            ) or "none"
-
-            with Session(db_engine) as db:
-                db_product = db.query(Product).filter(Product.id == product.id).first()
-                stored = _store_offers(db, db_product, top, dry_run)
-
-            stats.offers_stored += stored
-            logger.info(
-                "%s %s — %d candidates, %d stored [%s]%s",
-                product.brand, product.model,
-                len(candidates), stored, condition_summary,
-                " (dry-run)" if dry_run else "",
+    try:
+        # Guard 1: writes must be explicitly opted in via env var.
+        if not COLLECTOR_WRITES_ENABLED and not dry_run:
+            logger.warning(
+                "COLLECTOR_WRITES_ENABLED is false — forcing dry_run=True. "
+                "Set COLLECTOR_WRITES_ENABLED=true in backend/.env to enable writes."
             )
+            dry_run = True
 
-    stats.calls_made = calls_made
-    logger.info(
-        "Run complete — %d eBay API calls made (%.0f/day at 12-h schedule).",
-        calls_made, calls_made * 2,
-    )
+        # Guard 2: sandbox listings are synthetic and must never reach the DB.
+        if EBAY_ENVIRONMENT.lower() == "sandbox" and not dry_run:
+            logger.warning(
+                "EBAY_ENVIRONMENT=sandbox — forcing dry_run=True. "
+                "Sandbox listings are synthetic and must never be written to the database."
+            )
+            dry_run = True
+
+        db_engine = _create_engine(DATABASE_URL)
+        Base.metadata.create_all(bind=db_engine)
+
+        with Session(db_engine) as db:
+            query_obj = db.query(Product).options(
+                joinedload(Product.offers)
+            )
+            if product_id is not None:
+                query_obj = query_obj.filter(Product.id == product_id)
+            products = query_obj.all()
+
+        ebay_base = (
+            "https://api.sandbox.ebay.com"
+            if EBAY_ENVIRONMENT.lower() == "sandbox"
+            else "https://api.ebay.com"
+        )
+        logger.info(
+            "Starting collection — environment: %s | base: %s | products: %d | dry_run: %s",
+            EBAY_ENVIRONMENT, ebay_base, len(products), dry_run,
+        )
+
+        with EbayClient(EBAY_APP_ID, EBAY_CERT_ID, EBAY_ENVIRONMENT) as ebay:
+            for product in products:
+                # Call budget guard: abort before making the next API call.
+                if calls_made >= COLLECTOR_MAX_CALLS_PER_RUN:
+                    remaining = len(products) - stats.products_processed
+                    logger.warning(
+                        "Call budget exhausted (%d calls). Skipping %d remaining products.",
+                        calls_made, remaining,
+                    )
+                    break
+
+                stats.products_processed += 1
+                p_dict = {
+                    "brand": product.brand,
+                    "model": product.model,
+                    "name": product.name,
+                    "category": product.category,
+                }
+                search_query = build_search_query(product.brand, product.model)
+
+                try:
+                    raw = ebay.search(search_query, limit=50)
+                except EbayAuthError:
+                    # Not transient — invalid_client will fail for every subsequent
+                    # product with identical credentials. Abort immediately.
+                    calls_made += 1
+                    logger.error(
+                        "AUTH FAILURE on eBay %s (%s) — credentials rejected. "
+                        "Check that EBAY_APP_ID / EBAY_CERT_ID match "
+                        "EBAY_ENVIRONMENT='%s'. Aborting.",
+                        EBAY_ENVIRONMENT, ebay_base, EBAY_ENVIRONMENT,
+                    )
+                    raise
+                except (EbayRateLimitError, Exception) as exc:
+                    calls_made += 1
+                    logger.error("eBay search failed for %s %s: %s", product.brand, product.model, exc)
+                    stats.error_count += 1
+                    stats.skipped_products.append(f"{product.brand} {product.model}")
+                    continue
+                else:
+                    calls_made += 1
+
+                listings = parse_listings(raw)
+                candidates: list[EbayListing] = []
+
+                for listing in listings:
+                    score = _score_listing(listing, p_dict)
+                    if score < COLLECTOR_MIN_MATCH_SCORE:
+                        stats.no_match_count += 1
+                        continue
+
+                    # Reject listings whose normalized title contains an accessory keyword.
+                    if _is_accessory(listing.title):
+                        logger.info("REJECT [accessory] %s", listing.title[:80])
+                        stats.no_match_count += 1
+                        continue
+
+                    # Reject listings priced below the per-category floor.
+                    if _below_price_floor(listing.price, product.category):
+                        floor = CATEGORY_PRICE_FLOORS.get(product.category.lower(), 0.0)
+                        logger.info(
+                            "REJECT [price_floor] $%.2f < $%.2f (%s): %s",
+                            listing.price, floor, product.category, listing.title[:60],
+                        )
+                        stats.no_match_count += 1
+                        continue
+
+                    # Canonical model must appear literally in the listing title.
+                    # Roman numeral expansion handles "Earbuds II" matching model "Earbuds 2".
+                    listing_norm = normalize(_normalize_roman(listing.title))
+                    model_norm = normalize(_normalize_roman(p_dict["model"]))
+                    if model_norm not in listing_norm:
+                        logger.info("REJECT [model_not_in_title] %s", listing.title[:80])
+                        stats.no_match_count += 1
+                        continue
+
+                    # Bidirectional variant-token consistency check.
+                    if not _bidirectional_variant_check(search_query, listing.title, p_dict):
+                        logger.info("REJECT [variant_mismatch] %s", listing.title[:80])
+                        stats.no_match_count += 1
+                        continue
+
+                    listing.match_score = score
+                    candidates.append(listing)
+
+                    # High-price warning (informational only — never rejects).
+                    floor = CATEGORY_PRICE_FLOORS.get(product.category.lower())
+                    if floor and listing.price > floor * PRICE_HIGH_WATERMARK_MULTIPLIER:
+                        logger.warning(
+                            "HIGH PRICE $%.2f (%.1fx floor) [%s] %s",
+                            listing.price,
+                            listing.price / floor,
+                            listing.condition,
+                            listing.title[:60],
+                        )
+
+                    if verbose:
+                        logger.info(
+                            "  [%d] %s — $%.2f (%s)",
+                            score, listing.title[:60], listing.price, listing.condition,
+                        )
+
+                top = _top_offers_by_condition(candidates, COLLECTOR_OFFERS_PER_CONDITION)
+
+                condition_counts = {}
+                for l in top:
+                    condition_counts[l.condition] = condition_counts.get(l.condition, 0) + 1
+                condition_summary = " ".join(
+                    f"{cond}={n}" for cond, n in sorted(condition_counts.items())
+                ) or "none"
+
+                with Session(db_engine) as db:
+                    db_product = db.query(Product).filter(Product.id == product.id).first()
+                    stored = _store_offers(db, db_product, top, dry_run)
+
+                stats.offers_stored += stored
+                logger.info(
+                    "%s %s — %d candidates, %d stored [%s]%s",
+                    product.brand, product.model,
+                    len(candidates), stored, condition_summary,
+                    " (dry-run)" if dry_run else "",
+                )
+
+        logger.info(
+            "Run complete — %d eBay API calls made (%.0f/day at 12-h schedule).",
+            calls_made, calls_made * 2,
+        )
+
+    except Exception as exc:
+        _run_status = "failed"
+        _run_error = f"{type(exc).__name__}: {exc}"
+        raise
+
+    finally:
+        stats.calls_made = calls_made
+        if not dry_run and db_engine is not None:
+            try:
+                _record_run(db_engine, stats, started_at, _run_status, _run_error)
+            except Exception as record_exc:
+                logger.warning("Failed to persist CollectionRun: %s", record_exc)
+
     return stats

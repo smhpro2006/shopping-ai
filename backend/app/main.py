@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, APIRouter
+from fastapi import Depends, FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.core.config import settings
@@ -10,8 +10,9 @@ from backend.app.models.retailer import Retailer
 from backend.app.models.offer import Offer
 from backend.app.models.user import User  # noqa: F401
 from backend.app.models.coupon import Coupon  # noqa: F401
+from backend.app.models.collection_run import CollectionRun  # noqa: F401
 from backend.app.products import PRODUCTS, RETAILERS, OFFERS
-from backend.app.api import auth, products, deals, coupons
+from backend.app.api import auth, products, deals, coupons, health as health_api
 
 configure_logging()
 
@@ -89,6 +90,7 @@ _v1.include_router(auth.router)
 _v1.include_router(products.router)
 _v1.include_router(deals.router)
 _v1.include_router(coupons.router)
+_v1.include_router(health_api.router)
 app.include_router(_v1)
 
 # Unversioned routes kept for backward compatibility
@@ -106,5 +108,18 @@ def home():
 
 @app.get("/health", tags=["health"])
 @app.get("/api/v1/health", tags=["health"])
-def health():
-    return {"status": "ok"}
+def health(db=Depends(get_db)):
+    from backend.app.api.health import _get_collection_status
+    from fastapi.responses import JSONResponse
+    try:
+        ch = _get_collection_status(db)
+        collection_status = ch.status
+    except Exception:
+        collection_status = "unknown"
+
+    if collection_status in ("stale", "failed"):
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "collection": collection_status},
+        )
+    return {"status": "ok", "collection": collection_status}

@@ -6,12 +6,12 @@ class TestSearchEndpoint:
     def test_health(self, client):
         r = client.get("/health")
         assert r.status_code == 200
-        assert r.json() == {"status": "ok"}
+        assert r.json()["status"] == "ok"
 
     def test_versioned_health(self, client):
         r = client.get("/api/v1/health")
         assert r.status_code == 200
-        assert r.json() == {"status": "ok"}
+        assert r.json()["status"] == "ok"
 
     def test_search_requires_query(self, client):
         r = client.get("/search")

@@ -685,17 +685,22 @@ sufficient historical samples (≥30 per condition group) to be statistically me
 - Sonos Era 300: 1 candidate at $689 (retail ~$449). With a single sample there is no basis
   for rejection now, but it should be a clear outlier once 30+ data points accumulate.
 
-**Condition-group storage gap — must fix before Phase 7 (noted 2026-09-06):**
-All 87 offers written in the first live run were used/unknown condition. Zero new-condition offers
-landed. Root cause: `COLLECTOR_OFFERS_PER_PRODUCT=5` keeps the cheapest 5 across all conditions,
-and used listings are always cheaper than new. The price ceiling was removed to stop excluding new
-listings — but they're still absent, for a different reason.
-Impact: `lowest_price` shown to users is the used market price, not the new price. Deal Score and
-Buy/Wait will be calibrated against used pricing only. This is a product accuracy failure.
-Fix: store the top-N **per condition group** (new, used, refurbished each get a separate quota,
-e.g. `COLLECTOR_OFFERS_PER_CONDITION=3`). Do not fix during collection bringup, but fix before
-Phase 7 (price history) begins — every run without new-condition data is history that cannot be
-recovered. See collector design notes in this section.
+**Condition-group storage gap — FIXED (2026-09-06):**
+Replaced `COLLECTOR_OFFERS_PER_PRODUCT=5` (cheapest 5 overall) with `COLLECTOR_OFFERS_PER_CONDITION=3`
+(top 3 per condition group independently). `unknown` gets its own quota — not merged with `used`
+because eBay `unknown` can be new-in-box; merging would make an unverifiable assumption.
+After the fix, run 2 stored 118 offers: new=44, unknown=47, refurbished=8, used=106 (cumulative
+across both runs: 205 total). New-condition data is now accumulating.
+
+**"unknown" condition share (noted 2026-09-06):**
+A large share of stored offers (roughly 23% of cumulative ebay offers) carry `condition='unknown'`
+because many eBay sellers do not explicitly declare a condition. This is genuine uncertainty —
+not a data quality failure. Decide in Phase 8 (Deal Score) whether `unknown` is treated as new,
+used, or a separate bucket. Do not assume it maps to either. Options:
+- Treat as its own tier, scored separately with a confidence penalty.
+- Exclude from Deal Score computation until the condition is resolved.
+- Use listing price relative to known-condition prices as a proxy signal.
+The decision belongs in Phase 8 with real price history data, not now.
 
 **Brand-only query label (noted 2026-09-06):**
 Queries like "Sony" score 35 / Alternative for every result — correct behaviour from the brand
