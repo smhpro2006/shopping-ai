@@ -150,9 +150,9 @@ Priority order: Accuracy · Trust · Search quality · Product matching · Speed
 
 # PART III — ARCHITECTURE
 
-## 6. Current project status **[REVISED — Phase 0 complete 2026-09-04]**
+## 6. Current project status **[REVISED — Phase 5 complete 2026-09-07]**
 
-Phase 0 is **complete**. The project is ahead of the original baseline. Actual state:
+Phases 0–5 are **complete**. The project is ahead of the original baseline. Actual state (§6 was written at Phase 0; see Part VI for the current production snapshot):
 
 **Backend — `backend/app/`**
 
@@ -607,44 +607,32 @@ A feature is not complete because the code exists. It is complete when: implemen
 
 ---
 
-# PART VI — CURRENT EXECUTION INSTRUCTION **[REVISED — 2026-09-04]**
+# PART VI — CURRENT EXECUTION INSTRUCTION **[REVISED — 2026-09-07]**
 
 ## Completed phases
 
 | Phase | Status | Completed |
 |---|---|---|
 | Phase 0 — Project Foundation | **Done** | 2026-09-04 |
+| Phase 1 — Smart Product Search | **Done** | 2026-09-05 |
+| Phase 2 — Canonical Products + Product Matching | **Done** | 2026-09-05 |
+| Phase 3 — Data Acquisition | **Done** | 2026-09-06 |
+| Phase 4 — Retailer / Offer Architecture | **Done** | 2026-09-06 |
+| Phase 5 — Persistence + Collection Health Monitoring | **Done** | 2026-09-07 |
 
-## Current position: Phase 1 — Smart Product Search
+## Current position: waiting for data to accumulate
 
-**Next up:** improve the search and matching engine. The priority is search quality — it is the primary competitive advantage.
+Phases 7–10 (Price History, Deal Score, Buy/Wait, Price Prediction) are blocked until ~30 data points per condition per product exist. At 2 runs/day that is roughly:
+- **2 weeks** (~28 runs): first usable price trend per product
+- **1 month** (~60 runs): enough per-condition samples for a confident Deal Score
 
-Phase 0 is done. Do not re-inspect the foundation. Do not start Phase 2 (Canonical Products) until Phase 1 search quality milestones are met and confirmed.
-
-## Phase 1 milestones
-
-The engine must correctly handle all of:
-
-- Exact model matching
-- Partial model matching (model fragments ≥ 3 chars)
-- Brand matching
-- Multi-word queries
-- Punctuation normalization (hyphens, spaces, special chars)
-- Case normalization
-- Common abbreviations
-- Category awareness
-- Variant awareness (different capacity/color = not exact)
-- Confidence score (0–100, classification per §12)
-- Deterministic, explainable ranking
-- Tests for all of the above
-
-**Known issue to fix in Phase 1:** multi-fragment queries can reach score 100 against different-capacity variants. The engine must not falsely assign 95+ to products with a materially different spec (e.g. 512GB vs 256GB). See §12 and `TestVariantDistinction`.
+The next unblocked work is catalog expansion (20 → 60 products), but three confirmed matching collisions must be fixed first — see Deferred Items below. Do not start catalog expansion without resolving those first and adding permanent tests.
 
 ## Standing rules (always)
 
-The `Sony XM5` → `Sony WH-1000XM5` behaviour and all 23 tests must remain passing after every change.
+The `Sony XM5` → `Sony WH-1000XM5` behaviour and all 238 tests must remain passing after every change.
 
-Do not start Phase 2 (Canonical Products), Phase 3 (Data Acquisition), or the frontend until Phase 1 is complete and confirmed.
+Do not start Phases 7–10 without sufficient accumulated price history (see data threshold above).
 
 ## Compliance
 
@@ -659,6 +647,90 @@ be built first. The full contract is researched and documented:
 - POST: RSA-verify `JSON.stringify(body)` against `X-EBAY-SIGNATURE` using eBay's rotated public key (fetch by `kid`)
 - Token constraints: 32–80 chars, alphanumeric/underscore/hyphen
 - Return 204 on success, 412 on signature mismatch
+
+## Railway deployment gotchas — do not repeat
+
+Learned during 2026-09-07 deploy of Phase 5. Applies to every future deploy.
+
+**Auto-deploy does not work in this project.** Railway services created from GitHub do NOT
+auto-deploy on push. Both the web service and the cron service required a manual Redeploy
+click after each push. Do not assume a `git push` is live — always verify with curl.
+
+**New service silently runs the wrong start command.** A new Railway service inherits
+`railway.json`'s start command (uvicorn). The collector-cron ran uvicorn for hours before
+we noticed. Always set **Custom Start Command** explicitly when creating a new service.
+
+**Build command must also be set.** Without a Custom Build Command, Railway skips dependency
+installation. The collector-cron failed with `ModuleNotFoundError: httpx` until `pip install
+-r requirements.txt` was added as the build command.
+
+**Local dev URL prefix differs from Railway's.** Railway injects `postgresql://` in
+`DATABASE_URL`. The app transforms it to `postgresql+psycopg://` at the config boundary.
+Local dev connecting directly to Railway Postgres must use `postgresql+psycopg://` in
+`.env`. `psycopg[binary]` must be installed locally (`pip install psycopg[binary]`).
+
+**Deploy order for schema migrations:**
+1. Pause cron service (prevent collector writing to old schema mid-migration)
+2. Deploy web service (runs `alembic upgrade head` at startup — or run manually)
+3. Verify `/health` returns 200
+4. Redeploy cron service with new code
+5. Re-enable cron schedule
+
+## Production state — as of 2026-09-07
+
+| Metric | Value |
+|---|---|
+| Canonical products | 20 |
+| Categories | 3 (headphones, earbuds, speakers) |
+| Total offers stored | 319 (2 collection runs) |
+| First data point | 2026-09-06 |
+| Collection schedule | Every 12 hours (`0 */12 * * *`) |
+| eBay API calls | ~20/run, ~40/day |
+| Tests passing | 238 |
+| Production DB | Railway Postgres |
+| Health monitoring | `/api/v1/health/collection` — healthy/stale/failed/unknown |
+| Stale threshold | 26 hours (two 12-hour cycles + 2-hour margin) |
+
+## Deferred items — deliberate, with reasons
+
+These are known gaps. Do not silently fix them without noting the tradeoff.
+
+**Catalog expansion to 60 products (20 phones + 20 laptops):**
+Deferred because three confirmed matching collisions must be fixed first. Adding 40 products
+before the engine handles these will silently corrupt offer attribution.
+- Galaxy S25 vs S25+: both normalize to `"galaxys25"` — `+` stripped by `normalize()`. The
+  S25+ needs a disambiguating suffix or the model_not_in_title gate to catch it.
+- Pixel 9 Pro XL vs Pixel 9 Pro: `"pixel9pro"` is a prefix of `"pixel9proxl"`. `XL` is not
+  a ctx token, so the veto does not fire. XL listings reach the Pro product.
+- MacBook Pro 14 M3 base vs M3 Pro chip: `"macbookpro14m3"` is a prefix of
+  `"macbookpro14m3pro"`. The word "Pro" is shared between the product line name and the chip
+  tier, confusing the ctx veto.
+Fix each collision, add a permanent test, then proceed with expansion.
+
+**"Pro" product-line vs chip-tier ambiguity in the matching engine:**
+The ctx veto uses `pro` as a context token for both "MacBook Pro" (product line) and
+"M3 Pro" (chip tier). One-directional veto catches some cases but not all. Needs a
+disambiguation pass before MacBook catalog is added.
+
+**"HYPERBOOM /NO POWER ADAPTER-" false rejection:**
+The `adapter` keyword in the accessory filter rejects UE HYPERBOOM listings sold without
+their charger. The product is real; the charger absence is a listing note, not the item
+being an accessory. Fixing it requires positional/context logic (charger-for-product vs
+product-sold-without-charger) not yet implemented.
+
+**"BATTERY NEEDS REPAIR" titles pass the accessory filter:**
+Only `needsreplacement` is blocked. `needsrepair` is not. These are damaged units priced
+below market and inflate the low end of price distribution.
+
+**Jabra Elite 10 at $449.98 and Sonos Era 300 at $689:**
+Likely bundle / listing errors. No basis for rejection with 2 data points. Review once
+30+ per-condition samples exist — if they persist as the highest stored prices they will
+skew Deal Score significantly.
+
+**"unknown" condition share in Deal Score:**
+~23% of eBay offers carry `condition='unknown'` because sellers omit it. Decide in Phase 8
+whether `unknown` is scored as new, used, or a separate tier with a confidence penalty.
+Do not assume it maps to either until that decision is made with real data.
 
 ## Collector design decisions
 
@@ -702,11 +774,10 @@ used, or a separate bucket. Do not assume it maps to either. Options:
 - Use listing price relative to known-condition prices as a proxy signal.
 The decision belongs in Phase 8 with real price history data, not now.
 
-**Brand-only query label (noted 2026-09-06):**
-Queries like "Sony" score 35 / Alternative for every result — correct behaviour from the brand
-gate (score capped at 70 without model signal, then further filtered), but the "Alternative" label
-may confuse users browsing by brand who expect all Sony products to be "Exact Match". Revisit the
-label mapping or add a UI note for brand-only queries in Phase 17 (frontend).
+**Brand-only query label — FIXED (2026-09-06):**
+Queries like "Sony" now return results labeled "Brand Match" instead of "Alternative". Score
+is unchanged (~35); only the label is overridden when the query is a single known brand token
+with no model signal. Covered by `TestBrandOnlyQueryLabel` (3 tests).
 
 **Known collector gaps (pre-existing, not yet addressed):**
 - `adapter` word keyword rejects "HYPERBOOM /NO POWER ADAPTER-" — a real speaker listed without
